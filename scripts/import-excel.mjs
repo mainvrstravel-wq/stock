@@ -1,8 +1,10 @@
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { PrismaClient, TransactionType } from "@prisma/client";
+import prismaPkg from "@prisma/client";
 import XLSX from "xlsx";
+
+const { PrismaClient, TransactionType } = prismaPkg;
 
 const prisma = new PrismaClient();
 
