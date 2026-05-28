@@ -60,21 +60,6 @@ type AdjustForm = {
 
 type ActiveTab = "dashboard" | "inventory" | "transactions" | "summary";
 
-const INITIAL_PRODUCTS: Product[] = [
-  { id: "1", code: "STK0001", category: "วัสดุช่างเหล็ก", name: "ลวดขาว 3 mm.", unit: "ม้วน", initial: 1, received: 0, issued: 0 },
-  { id: "2", code: "STK0002", category: "วัสดุช่างเหล็ก", name: "ประแจดัดเหล็ก ขนาด 9-6 mm.", unit: "อัน", initial: 5, received: 0, issued: 0 },
-  { id: "3", code: "STK0003", category: "วัสดุช่างเหล็ก", name: "ประแจดัดเหล็ก ขนาด 9-12 mm.", unit: "อัน", initial: 5, received: 0, issued: 0 },
-  { id: "4", code: "STK0004", category: "วัสดุช่างเหล็ก", name: "คีมผูกลวด", unit: "อัน", initial: 15, received: 0, issued: 0 },
-  { id: "5", code: "STK0005", category: "วัสดุช่างเหล็ก", name: "ประแจผูกเหล็ก", unit: "อัน", initial: 18, received: 0, issued: 0 },
-  { id: "6", code: "STK0006", category: "วัสดุช่างเหล็ก", name: "ลวด", unit: "ม้วน", initial: 3, received: 0, issued: 0 },
-  { id: "7", code: "STK0007", category: "วัสดุช่างเหล็ก", name: "ฉากเหล็ก 90 องศา (30mm.)", unit: "อัน", initial: 11, received: 0, issued: 0 },
-];
-
-const INITIAL_TRANSACTIONS: Transaction[] = [
-  { id: "t1", date: "2026-05-26 10:30", code: "STK0001", name: "ลวดขาว 3 mm.", category: "วัสดุช่างเหล็ก", type: "initial", quantity: 1, note: "ยอดยกมาเริ่มต้น" },
-  { id: "t2", date: "2026-05-26 10:31", code: "STK0004", name: "คีมผูกลวด", category: "วัสดุช่างเหล็ก", type: "initial", quantity: 15, note: "ยอดยกมาเริ่มต้น" },
-];
-
 const defaultProductForm = (): ProductForm => ({
   code: "",
   category: "วัสดุช่างเหล็ก",
@@ -108,8 +93,10 @@ async function loadStockData(
 }
 
 export default function Page() {
-  const [products, setProducts] = useState<Product[]>(INITIAL_PRODUCTS);
-  const [transactions, setTransactions] = useState<Transaction[]>(INITIAL_TRANSACTIONS);
+  const [products, setProducts] = useState<Product[]>([]);
+  const [transactions, setTransactions] = useState<Transaction[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<ActiveTab>("dashboard");
   const [searchQuery, setSearchQuery] = useState("");
   const [selectedCategory, setSelectedCategory] = useState("ทั้งหมด");
@@ -127,8 +114,21 @@ export default function Page() {
     quantity: 1,
     note: "",
   });
+
   useEffect(() => {
-    void loadStockData(setProducts, setTransactions);
+    const run = async () => {
+      try {
+        setIsLoading(true);
+        setLoadError(null);
+        await loadStockData(setProducts, setTransactions);
+      } catch (error) {
+        setLoadError(error instanceof Error ? error.message : "โหลดข้อมูลจาก API ไม่สำเร็จ");
+      } finally {
+        setIsLoading(false);
+      }
+    };
+
+    void run();
   }, []);
 
   const categories = useMemo(() => {
@@ -357,6 +357,18 @@ export default function Page() {
         </aside>
 
         <main className="flex-1 space-y-6">
+          {isLoading && (
+            <div className="rounded-xl border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-700">
+              กำลังโหลดข้อมูลสินค้าจากฐานข้อมูล...
+            </div>
+          )}
+
+          {loadError && (
+            <div className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">
+              โหลดข้อมูลไม่สำเร็จ: {loadError}
+            </div>
+          )}
+
           {activeTab === "dashboard" && (
             <div className="space-y-6 animate-fadeIn">
               <div className="bg-gradient-to-r from-blue-700 to-indigo-800 rounded-2xl p-6 text-white shadow-lg shadow-blue-100 relative overflow-hidden">
