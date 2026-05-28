@@ -1,4 +1,4 @@
-# STOCK PRO
+# STOCK PROs
 
 ระบบจัดการสต็อกวัสดุด้วย Next.js, Prisma และ PostgreSQL/Supabase
 
