@@ -1,0 +1,46 @@
+import { NextResponse } from "next/server";
+
+import { prisma } from "@/lib/prisma";
+import { mapBorrow } from "@/lib/stock";
+
+type Context = {
+  params: Promise<{ id: string }>;
+};
+
+export async function POST(request: Request, context: Context) {
+  const { id } = await context.params;
+  const body = await request.json();
+  const returnQty = Number(body.quantity ?? 0);
+
+  const borrow = await prisma.borrowRecord.findUnique({
+    where: { id },
+    include: { product: true, user: true },
+  });
+
+  if (!borrow) return NextResponse.json({ message: "Borrow not found" }, { status: 404 });
+  if (returnQty <= 0) return NextResponse.json({ message: "Quantity must be greater than zero" }, { status: 400 });
+
+  const maxReturnable = borrow.quantity - borrow.leftoverReturned;
+  if (returnQty > maxReturnable) {
+    return NextResponse.json({ message: "Return quantity exceeds borrowed quantity" }, { status: 400 });
+  }
+
+  await prisma.product.update({
+    where: { id: borrow.productId },
+    data: { issuedQty: Math.max(0, borrow.product.issuedQty - returnQty) },
+  });
+
+  const updatedLeftover = borrow.leftoverReturned + returnQty;
+  const updated = await prisma.borrowRecord.update({
+    where: { id },
+    data: {
+      leftoverReturned: updatedLeftover,
+      status: updatedLeftover >= borrow.quantity ? "RETURNED" : "CONSUMED",
+      returnedAt: new Date(),
+      note: `${borrow.note} (คืนเศษสะสมแล้ว ${updatedLeftover} ${borrow.product.unit})`,
+    },
+    include: { product: true, user: true },
+  });
+
+  return NextResponse.json(mapBorrow(updated));
+}

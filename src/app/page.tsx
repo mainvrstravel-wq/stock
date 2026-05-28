@@ -1,22 +1,38 @@
 "use client";
 
-import type { Dispatch, FormEvent, ReactNode, SetStateAction } from "react";
+import type { FormEvent, ReactNode } from "react";
 import { useEffect, useMemo, useState } from "react";
 import {
+  AlertCircle,
   AlertTriangle,
-  ArrowDownLeft,
-  ArrowUpRight,
+  Award,
+  Calendar,
+  Check,
+  ChevronRight,
+  Download,
   Edit,
-  FileSpreadsheet,
+  Flame,
   History,
   LayoutDashboard,
+  Lock,
+  LogOut,
   Package,
   Plus,
+  RotateCcw,
   Search,
   Trash2,
   TrendingUp,
   X,
 } from "lucide-react";
+
+type User = {
+  id: string;
+  name: string;
+  role: "admin" | "worker";
+  pin: string;
+  avatar: string;
+  department: string;
+};
 
 type Product = {
   id: string;
@@ -27,16 +43,25 @@ type Product = {
   initial: number;
   received: number;
   issued: number;
+  damaged: number;
+  lost: number;
+  safetyStock: number;
+  itemType: "returnable" | "consumable";
 };
 
-type Transaction = {
+type Borrow = {
   id: string;
   date: string;
   code: string;
   name: string;
-  category: string;
-  type: "initial" | "in" | "out";
   quantity: number;
+  unit: string;
+  userId: string;
+  userName: string;
+  itemType: "returnable" | "consumable";
+  status: "borrowing" | "returned" | "consumed" | "fully_consumed" | "damaged" | "lost";
+  leftoverReturned: number;
+  returnDate: string | null;
   note: string;
 };
 
@@ -49,16 +74,16 @@ type ProductForm = {
   initial: number;
   received: number;
   issued: number;
+  damaged: number;
+  lost: number;
+  safetyStock: number;
+  itemType: "returnable" | "consumable";
 };
 
-type AdjustForm = {
-  productId: string;
-  type: "in" | "out";
-  quantity: number;
-  note: string;
+type Toast = {
+  message: string;
+  type: "success" | "error" | "warning";
 };
-
-type ActiveTab = "dashboard" | "inventory" | "transactions" | "summary";
 
 const defaultProductForm = (): ProductForm => ({
   code: "",
@@ -68,67 +93,94 @@ const defaultProductForm = (): ProductForm => ({
   initial: 0,
   received: 0,
   issued: 0,
+  damaged: 0,
+  lost: 0,
+  safetyStock: 5,
+  itemType: "returnable",
 });
 
-async function loadStockData(
-  setProducts: Dispatch<SetStateAction<Product[]>>,
-  setTransactions: Dispatch<SetStateAction<Transaction[]>>,
-) {
-  const [productsResponse, transactionsResponse] = await Promise.all([
-    fetch("/api/products", { cache: "no-store" }),
-    fetch("/api/transactions", { cache: "no-store" }),
-  ]);
+const formatNumber = (num: number) => Number(Number(num).toFixed(2));
 
-  if (!productsResponse.ok || !transactionsResponse.ok) {
-    throw new Error("Failed to load stock data");
+const getBalance = (product: Product) =>
+  formatNumber(product.initial + product.received - product.issued - product.damaged - product.lost);
+
+async function fetchJson<T>(input: string, init?: RequestInit): Promise<T> {
+  const response = await fetch(input, init);
+  if (!response.ok) {
+    const payload = await response.json().catch(() => null);
+    throw new Error(payload?.message || `Request failed: ${response.status}`);
   }
-
-  const [productsData, transactionsData] = await Promise.all([
-    productsResponse.json() as Promise<Product[]>,
-    transactionsResponse.json() as Promise<Transaction[]>,
-  ]);
-
-  setProducts(productsData);
-  setTransactions(transactionsData);
+  return response.json() as Promise<T>;
 }
 
 export default function Page() {
+  const [users, setUsers] = useState<User[]>([]);
   const [products, setProducts] = useState<Product[]>([]);
-  const [transactions, setTransactions] = useState<Transaction[]>([]);
+  const [borrows, setBorrows] = useState<Borrow[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
-  const [activeTab, setActiveTab] = useState<ActiveTab>("dashboard");
+
+  const [currentUser, setCurrentUser] = useState<User | null>(null);
+  const [pinInput, setPinInput] = useState("");
+  const [loginError, setLoginError] = useState("");
+
+  const [activeTab, setActiveTab] = useState<"dashboard" | "inventory" | "transactions">("inventory");
+  const [dashboardSubTab, setDashboardSubTab] = useState<"overview" | "monthly">("overview");
+  const [selectedMonth, setSelectedMonth] = useState("2026-05");
+
   const [searchQuery, setSearchQuery] = useState("");
   const [selectedCategory, setSelectedCategory] = useState("ทั้งหมด");
   const [selectedStockStatus, setSelectedStockStatus] = useState("ทั้งหมด");
-  const [transactionSearch, setTransactionSearch] = useState("");
-  const [summaryMonth, setSummaryMonth] = useState(String(new Date().getMonth() + 1));
-  const [summaryYear, setSummaryYear] = useState(String(new Date().getFullYear()));
+
+  const [toast, setToast] = useState<Toast | null>(null);
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
   const [isEditModalOpen, setIsEditModalOpen] = useState(false);
-  const [isAdjustModalOpen, setIsAdjustModalOpen] = useState(false);
-  const [currentProduct, setCurrentProduct] = useState<ProductForm>(defaultProductForm());
-  const [adjustData, setAdjustData] = useState<AdjustForm>({
-    productId: "",
-    type: "in",
-    quantity: 1,
-    note: "",
+  const [isBorrowModalOpen, setIsBorrowModalOpen] = useState(false);
+  const [isIssueModalOpen, setIsIssueModalOpen] = useState(false);
+  const [isPartialReturnModalOpen, setIsPartialReturnModalOpen] = useState(false);
+  const [deleteConfirm, setDeleteConfirm] = useState<{ isOpen: boolean; productId: string | null; productName: string }>({
+    isOpen: false,
+    productId: null,
+    productName: "",
   });
 
-  useEffect(() => {
-    const run = async () => {
-      try {
-        setIsLoading(true);
-        setLoadError(null);
-        await loadStockData(setProducts, setTransactions);
-      } catch (error) {
-        setLoadError(error instanceof Error ? error.message : "โหลดข้อมูลจาก API ไม่สำเร็จ");
-      } finally {
-        setIsLoading(false);
-      }
-    };
+  const [currentProduct, setCurrentProduct] = useState<ProductForm>(defaultProductForm());
+  const [selectedProductForBorrow, setSelectedProductForBorrow] = useState<Product | null>(null);
+  const [borrowFormData, setBorrowFormData] = useState({ quantity: 1, note: "" });
+  const [selectedBorrowForIssue, setSelectedBorrowForIssue] = useState<Borrow | null>(null);
+  const [issueFormData, setIssueFormData] = useState({ type: "damaged" as "damaged" | "lost", quantity: 1, note: "" });
+  const [selectedBorrowForPartialReturn, setSelectedBorrowForPartialReturn] = useState<Borrow | null>(null);
+  const [partialReturnQty, setPartialReturnQty] = useState("");
 
-    void run();
+  const showToast = (message: string, type: Toast["type"] = "success") => setToast({ message, type });
+
+  useEffect(() => {
+    if (!toast) return;
+    const timer = setTimeout(() => setToast(null), 3500);
+    return () => clearTimeout(timer);
+  }, [toast]);
+
+  const loadBootstrap = async () => {
+    setIsLoading(true);
+    setLoadError(null);
+    try {
+      const data = await fetchJson<{ users: User[]; products: Product[]; borrows: Borrow[] }>("/api/bootstrap", { cache: "no-store" });
+      setUsers(data.users);
+      setProducts(data.products);
+      setBorrows(data.borrows);
+    } catch (error) {
+      setLoadError(error instanceof Error ? error.message : "โหลดข้อมูลไม่สำเร็จ");
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      void loadBootstrap();
+    }, 0);
+
+    return () => window.clearTimeout(timer);
   }, []);
 
   const categories = useMemo(() => {
@@ -140,87 +192,118 @@ export default function Page() {
     let totalQty = 0;
     let lowStockCount = 0;
     let outOfStockCount = 0;
+    let totalDamaged = 0;
+    let totalLost = 0;
 
     products.forEach((p) => {
-      const balance = p.initial + p.received - p.issued;
+      const balance = getBalance(p);
       totalQty += balance;
+      totalDamaged += p.damaged;
+      totalLost += p.lost;
+
       if (balance === 0) outOfStockCount += 1;
-      else if (balance <= 5) lowStockCount += 1;
+      else if (balance <= p.safetyStock) lowStockCount += 1;
     });
 
     return {
       totalItems: products.length,
-      totalQty,
+      totalQty: formatNumber(totalQty),
       lowStockCount,
       outOfStockCount,
+      activeBorrowsCount: borrows.filter((b) => b.status === "borrowing").length,
+      totalDamaged: formatNumber(totalDamaged),
+      totalLost: formatNumber(totalLost),
     };
-  }, [products]);
+  }, [products, borrows]);
+
+  const monthlyStats = useMemo(() => {
+    const monthlyBorrows = borrows.filter((b) => b.date.startsWith(selectedMonth));
+
+    let totalIssued = 0;
+    let totalReturned = 0;
+    let totalDamaged = 0;
+    let totalLost = 0;
+    let totalConsumed = 0;
+    const itemUsageMap: Record<string, number> = {};
+
+    monthlyBorrows.forEach((b) => {
+      if (b.status === "returned") totalReturned += b.quantity;
+      if (b.status === "damaged") totalDamaged += b.quantity;
+      if (b.status === "lost") totalLost += b.quantity;
+      if (b.status === "consumed" || b.status === "fully_consumed") totalConsumed += b.quantity - b.leftoverReturned;
+
+      totalIssued += b.quantity;
+      const usedQty = b.quantity - b.leftoverReturned;
+      itemUsageMap[b.name] = (itemUsageMap[b.name] || 0) + usedQty;
+    });
+
+    const topItems = Object.entries(itemUsageMap)
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 3);
+
+    return {
+      monthlyBorrows,
+      totalIssued: formatNumber(totalIssued),
+      totalReturned: formatNumber(totalReturned),
+      totalDamaged: formatNumber(totalDamaged),
+      totalLost: formatNumber(totalLost),
+      totalConsumed: formatNumber(totalConsumed),
+      topItems,
+    };
+  }, [borrows, selectedMonth]);
+
+  const availableMonths = useMemo(() => {
+    const months = new Set<string>();
+    borrows.forEach((b) => months.add(b.date.substring(0, 7)));
+    if (months.size === 0) months.add(selectedMonth);
+    return Array.from(months).sort().reverse();
+  }, [borrows, selectedMonth]);
 
   const filteredProducts = useMemo(() => {
     return products.filter((p) => {
-      const matchesSearch =
-        p.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-        p.code.toLowerCase().includes(searchQuery.toLowerCase()) ||
-        p.category.toLowerCase().includes(searchQuery.toLowerCase());
-
+      const matchesSearch = p.name.toLowerCase().includes(searchQuery.toLowerCase()) || p.code.toLowerCase().includes(searchQuery.toLowerCase());
       const matchesCategory = selectedCategory === "ทั้งหมด" || p.category === selectedCategory;
+      const balance = getBalance(p);
 
-      const balance = p.initial + p.received - p.issued;
       let matchesStatus = true;
-      if (selectedStockStatus === "low") matchesStatus = balance > 0 && balance <= 5;
+      if (selectedStockStatus === "low") matchesStatus = balance > 0 && balance <= p.safetyStock;
       else if (selectedStockStatus === "empty") matchesStatus = balance === 0;
-      else if (selectedStockStatus === "available") matchesStatus = balance > 5;
+      else if (selectedStockStatus === "normal") matchesStatus = balance > p.safetyStock;
 
       return matchesSearch && matchesCategory && matchesStatus;
     });
   }, [products, searchQuery, selectedCategory, selectedStockStatus]);
 
-  const filteredTransactions = useMemo(() => {
-    return transactions.filter((tx) => {
-      if (!transactionSearch.trim()) return true;
-      const query = transactionSearch.toLowerCase();
-      return (
-        tx.code.toLowerCase().includes(query) ||
-        tx.name.toLowerCase().includes(query) ||
-        tx.category.toLowerCase().includes(query) ||
-        tx.note.toLowerCase().includes(query)
-      );
-    });
-  }, [transactions, transactionSearch]);
+  const myBorrows = useMemo(() => {
+    if (!currentUser) return [];
+    return borrows.filter((b) => b.userId === currentUser.id);
+  }, [borrows, currentUser]);
 
-  const monthlySummary = useMemo(() => {
-    const month = Number.parseInt(summaryMonth, 10);
-    const year = Number.parseInt(summaryYear, 10);
-    if (Number.isNaN(month) || Number.isNaN(year)) return [];
+  const visibleBorrows = currentUser?.role === "admin" ? borrows : myBorrows;
 
-    return products.map((product) => {
-      const related = transactions.filter((tx) => tx.code === product.code);
-      const currentMonthTx = related.filter((tx) => {
-        const date = new Date(tx.date.replace(" ", "T"));
-        return date.getMonth() + 1 === month && date.getFullYear() === year;
-      });
+  const handleLogin = (e: FormEvent<HTMLFormElement>) => {
+    e.preventDefault();
+    const foundUser = users.find((user) => user.pin === pinInput);
+    if (!foundUser) {
+      setLoginError("รหัส PIN ไม่ถูกต้อง! กรุณาลองใหม่อีกครั้ง");
+      return;
+    }
 
-      const received = currentMonthTx.filter((tx) => tx.type === "in").reduce((sum, tx) => sum + tx.quantity, 0);
-      const issued = currentMonthTx.filter((tx) => tx.type === "out").reduce((sum, tx) => sum + tx.quantity, 0);
-      const balance = product.initial + product.received - product.issued;
+    setCurrentUser(foundUser);
+    setPinInput("");
+    setLoginError("");
+    setActiveTab(foundUser.role === "admin" ? "dashboard" : "inventory");
+    showToast(`ยินดีต้อนรับคุณ ${foundUser.name}!`, "success");
+  };
 
-      return {
-        ...product,
-        monthReceived: received,
-        monthIssued: issued,
-        endingBalance: balance,
-      };
-    });
-  }, [products, transactions, summaryMonth, summaryYear]);
+  const handleLogout = () => {
+    setCurrentUser(null);
+    showToast("ออกจากระบบเรียบร้อยแล้ว", "warning");
+  };
 
   const generateNextCode = () => {
     if (products.length === 0) return "STK0001";
-    const maxNum = Math.max(
-      ...products.map((p) => {
-        const num = Number.parseInt(p.code.replace("STK", ""), 10);
-        return Number.isNaN(num) ? 0 : num;
-      }),
-    );
+    const maxNum = Math.max(...products.map((p) => Number.parseInt(p.code.replace("STK", ""), 10) || 0));
     return `STK${String(maxNum + 1).padStart(4, "0")}`;
   };
 
@@ -231,18 +314,20 @@ export default function Page() {
 
   const handleAddProduct = async (e: FormEvent<HTMLFormElement>) => {
     e.preventDefault();
-    if (!currentProduct.name.trim()) return;
-    const response = await fetch("/api/products", {
+    if (!currentProduct.name.trim()) {
+      showToast("กรุณากรอกชื่อวัสดุพัสดุ!", "error");
+      return;
+    }
+
+    await fetchJson("/api/products", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(currentProduct),
     });
-    if (!response.ok) {
-      window.alert("บันทึกสินค้าไม่สำเร็จ");
-      return;
-    }
-    await loadStockData(setProducts, setTransactions);
+
     setIsAddModalOpen(false);
+    await loadBootstrap();
+    showToast(`ลงทะเบียนสินค้า "${currentProduct.name}" เรียบร้อย!`, "success");
   };
 
   const openEditModal = (product: Product) => {
@@ -253,549 +338,645 @@ export default function Page() {
   const handleEditProduct = async (e: FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     if (!currentProduct.id) return;
-    const response = await fetch(`/api/products/${currentProduct.id}`, {
+
+    await fetchJson(`/api/products/${currentProduct.id}`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(currentProduct),
     });
-    if (!response.ok) {
-      window.alert("แก้ไขสินค้าไม่สำเร็จ");
-      return;
-    }
-    await loadStockData(setProducts, setTransactions);
+
     setIsEditModalOpen(false);
+    await loadBootstrap();
+    showToast("ปรับปรุงข้อมูลเรียบร้อย!", "success");
   };
 
-  const handleDeleteProduct = async (id: string, name: string) => {
-    if (window.confirm(`คุณต้องการลบรายการสินค้า "${name}" ใช่หรือไม่?`)) {
-      const response = await fetch(`/api/products/${id}`, { method: "DELETE" });
-      if (!response.ok) {
-        window.alert("ลบสินค้าไม่สำเร็จ");
-        return;
-      }
-      await loadStockData(setProducts, setTransactions);
-    }
+  const triggerDeleteProduct = (id: string, name: string) => {
+    setDeleteConfirm({ isOpen: true, productId: id, productName: name });
   };
 
-  const openAdjustModal = (product: Product, defaultType: "in" | "out" = "in") => {
-    setAdjustData({ productId: product.id, type: defaultType, quantity: 1, note: "" });
-    setIsAdjustModalOpen(true);
+  const executeDeleteProduct = async () => {
+    if (!deleteConfirm.productId) return;
+    await fetchJson(`/api/products/${deleteConfirm.productId}`, { method: "DELETE" });
+    const deletedName = deleteConfirm.productName;
+    setDeleteConfirm({ isOpen: false, productId: null, productName: "" });
+    await loadBootstrap();
+    showToast(`ลบรายการ "${deletedName}" แล้ว`, "warning");
   };
 
-  const handleAdjustStock = async (e: FormEvent<HTMLFormElement>) => {
+  const openBorrowModal = (product: Product) => {
+    setSelectedProductForBorrow(product);
+    setBorrowFormData({ quantity: 1, note: "" });
+    setIsBorrowModalOpen(true);
+  };
+
+  const handleBorrowSubmit = async (e: FormEvent<HTMLFormElement>) => {
     e.preventDefault();
-    const product = products.find((p) => p.id === adjustData.productId);
-    if (!product) return;
+    if (!selectedProductForBorrow || !currentUser) return;
 
-    const qty = Number(adjustData.quantity);
-    if (qty <= 0) return;
-
-    const currentBalance = product.initial + product.received - product.issued;
-    if (adjustData.type === "out" && currentBalance < qty) {
-      window.alert("ข้อผิดพลาด: ยอดสินค้าคงเหลือในสต็อกไม่เพียงพอต่อการจ่ายออก!");
-      return;
-    }
-
-    const response = await fetch("/api/transactions", {
+    await fetchJson("/api/borrows", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(adjustData),
+      body: JSON.stringify({
+        productId: selectedProductForBorrow.id,
+        userId: currentUser.id,
+        quantity: borrowFormData.quantity,
+        note: borrowFormData.note,
+      }),
     });
-    if (!response.ok) {
-      const error = await response.json().catch(() => null);
-      window.alert(error?.message === "Insufficient stock" ? "ยอดคงเหลือไม่พอสำหรับเบิกออก" : "บันทึกรายการไม่สำเร็จ");
-      return;
-    }
-    await loadStockData(setProducts, setTransactions);
-    setIsAdjustModalOpen(false);
+
+    setIsBorrowModalOpen(false);
+    await loadBootstrap();
+    showToast(`บันทึกขอเบิก "${selectedProductForBorrow.name}" เรียบร้อยแล้ว`, "success");
   };
 
-  const selectedProduct = products.find((p) => p.id === adjustData.productId);
+  const handleReturnProduct = async (borrowId: string) => {
+    await fetchJson(`/api/borrows/${borrowId}/return`, { method: "POST" });
+    await loadBootstrap();
+    showToast("บันทึกรับคืนสำเร็จ", "success");
+  };
+
+  const handlePartialReturnOpen = (borrowRecord: Borrow) => {
+    setSelectedBorrowForPartialReturn(borrowRecord);
+    setPartialReturnQty("");
+    setIsPartialReturnModalOpen(true);
+  };
+
+  const handlePartialReturnSubmit = async (e: FormEvent<HTMLFormElement>) => {
+    e.preventDefault();
+    if (!selectedBorrowForPartialReturn) return;
+    await fetchJson(`/api/borrows/${selectedBorrowForPartialReturn.id}/partial-return`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ quantity: partialReturnQty }),
+    });
+    setIsPartialReturnModalOpen(false);
+    await loadBootstrap();
+    showToast("บันทึกคืนเศษวัสดุสำเร็จ", "success");
+  };
+
+  const handleMarkFullyConsumed = async (borrowId: string) => {
+    await fetchJson(`/api/borrows/${borrowId}/mark-consumed`, { method: "POST" });
+    await loadBootstrap();
+    showToast("อัปเดตใบเบิกเป็นใช้หมดเรียบร้อย", "success");
+  };
+
+  const handleIssueReportOpen = (borrowRecord: Borrow) => {
+    setSelectedBorrowForIssue(borrowRecord);
+    setIssueFormData({
+      type: "damaged",
+      quantity: formatNumber(borrowRecord.quantity - borrowRecord.leftoverReturned),
+      note: "",
+    });
+    setIsIssueModalOpen(true);
+  };
+
+  const handleIssueReportSubmit = async (e: FormEvent<HTMLFormElement>) => {
+    e.preventDefault();
+    if (!selectedBorrowForIssue) return;
+    await fetchJson(`/api/borrows/${selectedBorrowForIssue.id}/issue`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(issueFormData),
+    });
+    setIsIssueModalOpen(false);
+    await loadBootstrap();
+    showToast(`ลงประวัติ "${selectedBorrowForIssue.name}" สำเร็จ`, "warning");
+  };
+
+  const handleMockExport = (format: string) => {
+    showToast(`จัดเตรียมเอกสารประเภท ${format} เสร็จสิ้น!`, "success");
+  };
 
   return (
-    <div className="min-h-screen bg-slate-50 text-slate-800 flex flex-col">
-      <header className="bg-white border-b border-slate-200 sticky top-0 z-30 shadow-sm">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between">
-          <div className="flex items-center space-x-3">
-            <div className="bg-blue-600 text-white p-2 rounded-lg shadow-md shadow-blue-200">
-              <Package className="h-6 w-6" />
-            </div>
-            <div>
-              <h1 className="text-xl font-bold tracking-tight text-slate-900">STK-Manager Pro</h1>
-              <p className="text-xs text-slate-500 font-medium">ระบบคลังสินค้าวัสดุและอุปกรณ์</p>
-            </div>
-          </div>
-          <div className="hidden md:flex items-center space-x-6 text-sm">
-            <div className="flex items-center space-x-2 bg-emerald-50 text-emerald-700 px-3 py-1.5 rounded-full border border-emerald-100">
-              <span className="h-2 w-2 bg-emerald-500 rounded-full animate-pulse" />
-              <span>บันทึกอัตโนมัติเปิดอยู่</span>
-            </div>
-            <div className="text-slate-500">
-              รายการธุรกรรม: <span className="font-semibold text-slate-700">{transactions.length}</span>
-            </div>
+    <div className="min-h-screen bg-slate-950 text-slate-100 font-sans flex flex-col pb-20 md:pb-0">
+      {toast && (
+        <div className="fixed top-4 left-4 right-4 md:left-auto md:right-4 z-50 animate-bounce">
+          <div className={`flex items-center space-x-3 px-4 py-3 rounded-xl shadow-2xl border ${toast.type === "success" ? "bg-emerald-600 border-emerald-500 text-white" : toast.type === "error" ? "bg-rose-600 border-rose-500 text-white" : "bg-amber-500 border-amber-400 text-slate-950"}`}>
+            {toast.type === "success" && <Check className="h-5 w-5 shrink-0" />}
+            {toast.type === "error" && <AlertTriangle className="h-5 w-5 shrink-0" />}
+            {toast.type === "warning" && <AlertCircle className="h-5 w-5 shrink-0" />}
+            <span className="text-sm font-bold">{toast.message}</span>
           </div>
         </div>
+      )}
+
+      <header className="bg-slate-950/80 backdrop-blur-md border-b border-slate-900 sticky top-0 z-40 px-4 py-3 flex items-center justify-between">
+        <div className="flex items-center space-x-2.5">
+          <div className="bg-gradient-to-tr from-blue-600 to-indigo-600 p-2 rounded-xl shadow-lg"><Package className="h-5 w-5 text-white" /></div>
+          <div>
+            <div className="flex items-center space-x-1.5">
+              <span className="text-sm font-black tracking-tight">สโตร์คลังอัจฉริยะ</span>
+              <span className="text-[9px] bg-blue-500/10 text-blue-400 px-1 py-0.5 rounded font-bold">V-Claims</span>
+            </div>
+            <p className="text-[10px] text-slate-400">ระบบคัดแยกยืม-คืน & แจ้งยอดชำรุดเสียหาย</p>
+          </div>
+        </div>
+        {currentUser && (
+          <div className="flex items-center space-x-2">
+            <div className="text-right hidden sm:block">
+              <p className="text-xs font-bold text-slate-200">{currentUser.name}</p>
+              <p className="text-[9px] text-slate-400">{currentUser.department}</p>
+            </div>
+            <div className="bg-slate-900 p-1.5 rounded-lg border border-slate-800 flex items-center space-x-2">
+              <span className="text-sm">{currentUser.avatar}</span>
+              <button onClick={handleLogout} className="text-rose-400 hover:text-rose-300 text-xs p-1" title="ออกจากระบบ"><LogOut className="h-3.5 w-3.5" /></button>
+            </div>
+          </div>
+        )}
       </header>
 
-      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 flex-1 w-full flex flex-col lg:flex-row gap-8">
-        <aside className="lg:w-64 flex-shrink-0">
-          <nav className="space-y-1 bg-white p-4 rounded-xl border border-slate-200 shadow-sm">
-            <p className="px-3 text-xs font-semibold text-slate-400 uppercase tracking-wider mb-3">เมนูหลัก</p>
-            <SidebarButton active={activeTab === "dashboard"} onClick={() => setActiveTab("dashboard")} icon={<LayoutDashboard className="h-5 w-5" />} label="แผงควบคุม (Dashboard)" />
-            <SidebarButton active={activeTab === "inventory"} onClick={() => setActiveTab("inventory")} icon={<Package className="h-5 w-5" />} label="คลังสินค้า (Stock Inventory)" />
-            <SidebarButton active={activeTab === "transactions"} onClick={() => setActiveTab("transactions")} icon={<History className="h-5 w-5" />} label="ประวัติรับ-จ่าย (History)" />
-            <SidebarButton active={activeTab === "summary"} onClick={() => setActiveTab("summary")} icon={<FileSpreadsheet className="h-5 w-5" />} label="สรุปรายเดือน (Monthly Summary)" />
-
-            <div className="pt-4 mt-4 border-t border-slate-100 space-y-2">
-              <p className="px-3 text-xs font-semibold text-slate-400 uppercase tracking-wider">ทางลัดด่วน</p>
-              <button onClick={openAddModal} className="w-full flex items-center justify-center gap-2 px-3 py-2 bg-blue-600 text-white hover:bg-blue-700 text-sm font-semibold rounded-lg transition-colors shadow-sm">
-                <Plus className="h-4 w-4" />
-                <span>เพิ่มสินค้าใหม่</span>
-              </button>
-            </div>
-          </nav>
-        </aside>
-
-        <main className="flex-1 space-y-6">
-          {isLoading && (
-            <div className="rounded-xl border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-700">
-              กำลังโหลดข้อมูลสินค้าจากฐานข้อมูล...
-            </div>
-          )}
-
-          {loadError && (
-            <div className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">
-              โหลดข้อมูลไม่สำเร็จ: {loadError}
-            </div>
-          )}
-
-          {activeTab === "dashboard" && (
-            <div className="space-y-6 animate-fadeIn">
-              <div className="bg-gradient-to-r from-blue-700 to-indigo-800 rounded-2xl p-6 text-white shadow-lg shadow-blue-100 relative overflow-hidden">
-                <div className="absolute top-0 right-0 p-8 opacity-10">
-                  <Package className="w-48 h-48 rotate-12" />
-                </div>
-                <div className="relative z-10">
-                  <h2 className="text-2xl font-bold">ยินดีต้อนรับสู่ระบบคลังวัสดุ</h2>
-                  <p className="text-blue-100 text-sm mt-1 max-w-xl">จัดการสต็อกวัสดุ ตรวจสอบยอดคงเหลือ รับเข้า เบิกออก และดูสรุปรายเดือนได้จากหน้าเดียว</p>
-                  <div className="mt-4 flex flex-wrap gap-2">
-                    <button onClick={() => setActiveTab("inventory")} className="bg-white text-blue-700 hover:bg-blue-50 px-4 py-2 rounded-lg text-xs font-semibold transition-colors shadow-sm">ดูสต็อกทั้งหมด</button>
-                    <button onClick={() => setActiveTab("summary")} className="bg-blue-600 text-white hover:bg-blue-500 border border-blue-500 px-4 py-2 rounded-lg text-xs font-semibold transition-colors">ไปหน้าสรุปรายเดือน</button>
-                  </div>
-                </div>
-              </div>
-
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-                <StatCard icon={<Package className="h-6 w-6" />} color="blue" label="สินค้าทั้งหมด" value={`${stats.totalItems} รายการ`} />
-                <StatCard icon={<TrendingUp className="h-6 w-6" />} color="emerald" label="จำนวนหน่วยรวม" value={`${stats.totalQty} หน่วย`} />
-                <StatCard icon={<AlertTriangle className="h-6 w-6" />} color="amber" label="ของใกล้หมด (≤ 5)" value={`${stats.lowStockCount} รายการ`} />
-                <StatCard icon={<X className="h-6 w-6" />} color="rose" label="สินค้าหมดสต็อก" value={`${stats.outOfStockCount} รายการ`} />
-              </div>
-
-              <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-                <div className="bg-white p-5 rounded-xl border border-slate-200 shadow-sm lg:col-span-2 space-y-4">
-                  <div className="flex items-center justify-between border-b border-slate-100 pb-3">
-                    <h3 className="font-bold text-slate-900 flex items-center space-x-2">
-                      <AlertTriangle className="h-5 w-5 text-amber-500" />
-                      <span>รายการแจ้งเตือนคลังสินค้าเหลือน้อย</span>
-                    </h3>
-                    <span className="text-xs bg-amber-50 text-amber-700 px-2 py-1 rounded-md font-medium">ควรเติมสต็อกด่วน</span>
-                  </div>
-
-                  <div className="divide-y divide-slate-100 max-h-[300px] overflow-y-auto">
-                    {products.filter((p) => p.initial + p.received - p.issued <= 5).map((p) => {
-                      const balance = p.initial + p.received - p.issued;
-                      return (
-                        <div key={p.id} className="py-3 flex items-center justify-between gap-4">
-                          <div>
-                            <p className="font-semibold text-sm text-slate-800">{p.name}</p>
-                            <p className="text-xs text-slate-500">รหัส: {p.code} | หมวดหมู่: {p.category}</p>
-                          </div>
-                          <div className="flex items-center space-x-4">
-                            <span className={`px-2 py-1 rounded text-xs font-bold ${balance === 0 ? "bg-rose-100 text-rose-700" : "bg-amber-100 text-amber-700"}`}>คงเหลือ {balance} {p.unit}</span>
-                            <button onClick={() => openAdjustModal(p, "in")} className="text-xs bg-blue-50 text-blue-600 hover:bg-blue-100 px-3 py-1.5 rounded-md font-semibold transition-colors">+ รับเข้าสต็อก</button>
-                          </div>
-                        </div>
-                      );
-                    })}
-                    {products.filter((p) => p.initial + p.received - p.issued <= 5).length === 0 && <p className="text-center text-slate-400 py-6 text-sm">ไม่มีสินค้าใดเหลือน้อย ดีเยี่ยม!</p>}
-                  </div>
-                </div>
-
-                <div className="bg-white p-5 rounded-xl border border-slate-200 shadow-sm space-y-4">
-                  <div className="flex items-center justify-between border-b border-slate-100 pb-3">
-                    <h3 className="font-bold text-slate-900 flex items-center space-x-2">
-                      <History className="h-5 w-5 text-blue-500" />
-                      <span>ประวัติเบิกจ่ายล่าสุด</span>
-                    </h3>
-                  </div>
-
-                  <div className="space-y-3 max-h-[300px] overflow-y-auto pr-1">
-                    {transactions.slice(0, 5).map((tx) => (
-                      <div key={tx.id} className="p-3 bg-slate-50 rounded-lg text-xs space-y-1 border border-slate-100">
-                        <div className="flex items-center justify-between">
-                          <span className="font-semibold text-slate-700">{tx.code}</span>
-                          <span className="text-[10px] text-slate-400">{tx.date}</span>
-                        </div>
-                        <p className="font-bold text-slate-900 truncate">{tx.name}</p>
-                        <div className="flex items-center justify-between pt-1">
-                          <span className="text-slate-500 truncate max-w-[120px]">{tx.note}</span>
-                          <span className={`font-bold ${tx.type === "in" ? "text-emerald-600" : tx.type === "out" ? "text-rose-600" : "text-blue-600"}`}>{tx.type === "in" ? "+" : tx.type === "out" ? "-" : ""} {tx.quantity}</span>
-                        </div>
-                      </div>
-                    ))}
-                    {transactions.length === 0 && <p className="text-center text-slate-400 py-6 text-sm">ยังไม่มีธุรกรรมเกิดขึ้น</p>}
-                  </div>
-                </div>
-              </div>
-            </div>
-          )}
-
-          {activeTab === "inventory" && (
-            <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden space-y-4 p-6 animate-fadeIn">
-              <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 pb-4 border-b border-slate-100">
-                <div>
-                  <h2 className="text-lg font-bold text-slate-900 flex items-center space-x-2">
-                    <FileSpreadsheet className="text-emerald-600 h-5 w-5" />
-                    <span>ตารางคลังสินค้า</span>
-                  </h2>
-                  <p className="text-xs text-slate-500 mt-1">ค้นหา คัดกรอง รับเข้า เบิกออก และแก้ไขข้อมูลสินค้าได้จากหน้าตารางนี้</p>
-                </div>
-                <button onClick={openAddModal} className="bg-blue-600 text-white hover:bg-blue-700 px-4 py-2 rounded-lg text-sm font-semibold transition-colors flex items-center gap-1.5 shadow-sm">
-                  <Plus className="h-4 w-4" />
-                  <span>เพิ่มสินค้า</span>
-                </button>
-              </div>
-
-              <div className="grid grid-cols-1 md:grid-cols-12 gap-3 bg-slate-50 p-3 rounded-lg border border-slate-100">
-                <div className="relative md:col-span-5">
-                  <Search className="absolute left-3 top-2.5 h-4 w-4 text-slate-400" />
-                  <input type="text" placeholder="ค้นหาด้วย รหัส, รายการสินค้า..." value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} className="w-full pl-9 pr-4 py-2 text-sm bg-white border border-slate-200 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500" />
-                </div>
-                <div className="md:col-span-3 flex items-center space-x-1.5">
-                  <span className="text-xs text-slate-500 whitespace-nowrap">หมวดหมู่:</span>
-                  <select value={selectedCategory} onChange={(e) => setSelectedCategory(e.target.value)} className="w-full py-2 px-3 text-sm bg-white border border-slate-200 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500">
-                    {categories.map((c) => <option key={c} value={c}>{c}</option>)}
-                  </select>
-                </div>
-                <div className="md:col-span-4 flex items-center space-x-1.5">
-                  <span className="text-xs text-slate-500 whitespace-nowrap">สถานะ:</span>
-                  <select value={selectedStockStatus} onChange={(e) => setSelectedStockStatus(e.target.value)} className="w-full py-2 px-3 text-sm bg-white border border-slate-200 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500">
-                    <option value="ทั้งหมด">ทั้งหมด</option>
-                    <option value="available">พร้อมใช้ (&gt; 5)</option>
-                    <option value="low">ใกล้หมด (1 - 5)</option>
-                    <option value="empty">หมดสต็อก (0)</option>
-                  </select>
-                </div>
-              </div>
-
-              <div className="overflow-x-auto border border-slate-100 rounded-lg">
-                <table className="min-w-full divide-y divide-slate-200 text-sm">
-                  <thead className="bg-slate-50 text-slate-600 font-semibold uppercase text-xs">
-                    <tr>
-                      <th className="px-4 py-3 text-left">รหัสสินค้า</th>
-                      <th className="px-4 py-3 text-left">หมวดหมู่</th>
-                      <th className="px-4 py-3 text-left">รายการสินค้า</th>
-                      <th className="px-4 py-3 text-center">หน่วยนับ</th>
-                      <th className="px-3 py-3 text-center bg-blue-50 text-blue-800">ยอดยกมา</th>
-                      <th className="px-3 py-3 text-center bg-emerald-50 text-emerald-800">รับเข้า (+)</th>
-                      <th className="px-3 py-3 text-center bg-rose-50 text-rose-800">จ่ายออก (-)</th>
-                      <th className="px-4 py-3 text-center bg-indigo-50 text-indigo-900 font-bold">คงเหลือ</th>
-                      <th className="px-4 py-3 text-right">ดำเนินการ</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-slate-100 bg-white">
-                    {filteredProducts.map((p) => {
-                      const balance = p.initial + p.received - p.issued;
-                      return (
-                        <tr key={p.id} className="hover:bg-slate-50 transition-colors">
-                          <td className="px-4 py-3.5 font-mono text-xs font-semibold text-slate-700">{p.code}</td>
-                          <td className="px-4 py-3.5 text-slate-500">{p.category}</td>
-                          <td className="px-4 py-3.5 font-medium text-slate-900">{p.name}</td>
-                          <td className="px-4 py-3.5 text-center text-slate-500">{p.unit}</td>
-                          <td className="px-3 py-3.5 text-center bg-blue-50/50 font-semibold text-slate-700">{p.initial}</td>
-                          <td className="px-3 py-3.5 text-center bg-emerald-50/50 text-emerald-600 font-semibold">{p.received}</td>
-                          <td className="px-3 py-3.5 text-center bg-rose-50/50 text-rose-600 font-semibold">{p.issued}</td>
-                          <td className="px-4 py-3.5 text-center bg-indigo-50/50">
-                            <span className={`px-2 py-1 rounded-full text-xs font-bold ${balance === 0 ? "bg-rose-100 text-rose-800" : balance <= 5 ? "bg-amber-100 text-amber-800" : "bg-indigo-100 text-indigo-900"}`}>{balance}</span>
-                          </td>
-                          <td className="px-4 py-3.5 text-right space-x-1 whitespace-nowrap">
-                            <button onClick={() => openAdjustModal(p, "in")} title="รับของเข้า" className="text-xs bg-emerald-50 text-emerald-700 hover:bg-emerald-100 p-1.5 rounded"><ArrowUpRight className="h-4 w-4" /></button>
-                            <button onClick={() => openAdjustModal(p, "out")} title="จ่ายของออก" className="text-xs bg-rose-50 text-rose-700 hover:bg-rose-100 p-1.5 rounded"><ArrowDownLeft className="h-4 w-4" /></button>
-                            <button onClick={() => openEditModal(p)} title="แก้ไขข้อมูลสินค้า" className="text-xs bg-slate-100 text-slate-600 hover:bg-slate-200 p-1.5 rounded"><Edit className="h-4 w-4" /></button>
-                            <button onClick={() => void handleDeleteProduct(p.id, p.name)} title="ลบรายการสินค้า" className="text-xs bg-slate-100 text-rose-600 hover:bg-rose-50 p-1.5 rounded"><Trash2 className="h-4 w-4" /></button>
-                          </td>
-                        </tr>
-                      );
-                    })}
-                    {filteredProducts.length === 0 && (
-                      <tr>
-                        <td colSpan={9} className="text-center text-slate-400 py-12 bg-slate-50/50">
-                          <Package className="h-8 w-8 mx-auto text-slate-300 mb-2" />
-                          <p className="text-sm font-medium">ไม่พบสินค้าที่ตรงตามเงื่อนไขค้นหา</p>
-                        </td>
-                      </tr>
-                    )}
-                  </tbody>
-                </table>
-              </div>
-
-              <div className="text-xs text-slate-400 flex flex-col sm:flex-row items-center justify-between pt-2">
-                <p>* สูตรคำนวณ: คงเหลือ = ยอดยกมา + รับเข้า - จ่ายออก</p>
-                <p>จำนวนที่แสดงอยู่ทั้งหมด: {filteredProducts.length} รายการสินค้า</p>
-              </div>
-            </div>
-          )}
-
-          {activeTab === "transactions" && (
-            <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-6 space-y-4 animate-fadeIn">
-              <div className="pb-3 border-b border-slate-100">
-                <h2 className="text-lg font-bold text-slate-900 flex items-center space-x-2">
-                  <History className="text-blue-600 h-5 w-5" />
-                  <span>บันทึกประวัติการเดินคลังสินค้า</span>
-                </h2>
-                <p className="text-xs text-slate-500 mt-1">รายการรับเข้า ยอดยกมา และจ่ายออก เรียงจากล่าสุดไปเก่าสุด</p>
-              </div>
-
-              <div className="relative max-w-md">
-                <Search className="absolute left-3 top-2.5 h-4 w-4 text-slate-400" />
-                <input type="text" placeholder="ค้นหาธุรกรรมด้วย รหัสสินค้า / ชื่อ / หมายเหตุ" value={transactionSearch} onChange={(e) => setTransactionSearch(e.target.value)} className="w-full pl-9 pr-4 py-2 text-sm bg-white border border-slate-200 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500" />
-              </div>
-
-              <div className="overflow-x-auto">
-                <table className="min-w-full divide-y divide-slate-200 text-sm">
-                  <thead className="bg-slate-50 text-slate-500 font-semibold text-left text-xs uppercase">
-                    <tr>
-                      <th className="px-4 py-3">วัน-เวลา</th>
-                      <th className="px-4 py-3">รหัส</th>
-                      <th className="px-4 py-3">หมวดหมู่</th>
-                      <th className="px-4 py-3">รายการสินค้า</th>
-                      <th className="px-4 py-3 text-center">ประเภท</th>
-                      <th className="px-4 py-3 text-center">จำนวน</th>
-                      <th className="px-4 py-3">หมายเหตุเพิ่มเติม</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-slate-100 bg-white">
-                    {filteredTransactions.map((tx) => (
-                      <tr key={tx.id} className="hover:bg-slate-50 transition-colors">
-                        <td className="px-4 py-3 whitespace-nowrap text-xs text-slate-500 font-mono">{tx.date}</td>
-                        <td className="px-4 py-3 font-mono text-xs font-semibold text-slate-700">{tx.code}</td>
-                        <td className="px-4 py-3 text-slate-500">{tx.category}</td>
-                        <td className="px-4 py-3 font-medium text-slate-900">{tx.name}</td>
-                        <td className="px-4 py-3 text-center">
-                          <span className={`px-2 py-0.5 rounded text-xs font-bold inline-block ${tx.type === "in" ? "bg-emerald-100 text-emerald-800" : tx.type === "out" ? "bg-rose-100 text-rose-800" : "bg-blue-100 text-blue-800"}`}>{tx.type === "in" ? "รับเข้า" : tx.type === "out" ? "จ่ายออก" : "ยอดยกมา"}</span>
-                        </td>
-                        <td className={`px-4 py-3 text-center font-bold ${tx.type === "in" ? "text-emerald-600" : tx.type === "out" ? "text-rose-600" : "text-blue-600"}`}>{tx.type === "in" ? "+" : tx.type === "out" ? "-" : ""}{tx.quantity}</td>
-                        <td className="px-4 py-3 text-slate-500 text-xs">{tx.note}</td>
-                      </tr>
-                    ))}
-                    {filteredTransactions.length === 0 && (
-                      <tr>
-                        <td colSpan={7} className="text-center text-slate-400 py-12"><p>ไม่พบธุรกรรมที่ตรงกับคำค้น</p></td>
-                      </tr>
-                    )}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          )}
-
-          {activeTab === "summary" && (
-            <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-6 space-y-4 animate-fadeIn">
-              <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 pb-4 border-b border-slate-100">
-                <div>
-                  <h2 className="text-lg font-bold text-slate-900 flex items-center space-x-2">
-                    <FileSpreadsheet className="text-blue-600 h-5 w-5" />
-                    <span>สรุปรายเดือน</span>
-                  </h2>
-                  <p className="text-xs text-slate-500 mt-1">ดูภาพรวมยอดรับเข้า จ่ายออก และคงเหลือตามเดือนที่เลือก</p>
-                </div>
-                <div className="flex gap-3">
-                  <select value={summaryMonth} onChange={(e) => setSummaryMonth(e.target.value)} className="py-2 px-3 text-sm bg-white border border-slate-200 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500">
-                    {Array.from({ length: 12 }, (_, index) => String(index + 1)).map((month) => <option key={month} value={month}>{`เดือน ${month}`}</option>)}
-                  </select>
-                  <input value={summaryYear} onChange={(e) => setSummaryYear(e.target.value)} className="w-24 py-2 px-3 text-sm bg-white border border-slate-200 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500" />
-                </div>
-              </div>
-
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                <StatCard icon={<ArrowUpRight className="h-6 w-6" />} color="emerald" label="รับเข้ารวมเดือนนี้" value={`${monthlySummary.reduce((sum, item) => sum + item.monthReceived, 0)} หน่วย`} />
-                <StatCard icon={<ArrowDownLeft className="h-6 w-6" />} color="rose" label="จ่ายออกรวมเดือนนี้" value={`${monthlySummary.reduce((sum, item) => sum + item.monthIssued, 0)} หน่วย`} />
-                <StatCard icon={<Package className="h-6 w-6" />} color="blue" label="คงเหลือรวมปัจจุบัน" value={`${monthlySummary.reduce((sum, item) => sum + item.endingBalance, 0)} หน่วย`} />
-              </div>
-
-              <div className="overflow-x-auto border border-slate-100 rounded-lg">
-                <table className="min-w-full divide-y divide-slate-200 text-sm">
-                  <thead className="bg-slate-50 text-slate-600 font-semibold uppercase text-xs">
-                    <tr>
-                      <th className="px-4 py-3 text-left">รหัสสินค้า</th>
-                      <th className="px-4 py-3 text-left">หมวดหมู่</th>
-                      <th className="px-4 py-3 text-left">รายการสินค้า</th>
-                      <th className="px-4 py-3 text-center">ยอดยกมา</th>
-                      <th className="px-4 py-3 text-center">รับเข้าเดือนนี้</th>
-                      <th className="px-4 py-3 text-center">จ่ายออกเดือนนี้</th>
-                      <th className="px-4 py-3 text-center">คงเหลือปัจจุบัน</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-slate-100 bg-white">
-                    {monthlySummary.map((item) => (
-                      <tr key={item.id} className="hover:bg-slate-50 transition-colors">
-                        <td className="px-4 py-3 font-mono text-xs font-semibold text-slate-700">{item.code}</td>
-                        <td className="px-4 py-3 text-slate-500">{item.category}</td>
-                        <td className="px-4 py-3 font-medium text-slate-900">{item.name}</td>
-                        <td className="px-4 py-3 text-center">{item.initial}</td>
-                        <td className="px-4 py-3 text-center text-emerald-600 font-semibold">{item.monthReceived}</td>
-                        <td className="px-4 py-3 text-center text-rose-600 font-semibold">{item.monthIssued}</td>
-                        <td className="px-4 py-3 text-center font-bold">{item.endingBalance}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          )}
-        </main>
-      </div>
-
-      {isAddModalOpen && (
-        <ProductModal title="เพิ่มสินค้าในบัญชี" product={currentProduct} setProduct={setCurrentProduct} onClose={() => setIsAddModalOpen(false)} onSubmit={handleAddProduct} submitLabel="ยืนยันบันทึก" />
-      )}
-
-      {isEditModalOpen && (
-        <ProductModal title={`แก้ไขข้อมูลสินค้า (${currentProduct.code})`} product={currentProduct} setProduct={setCurrentProduct} onClose={() => setIsEditModalOpen(false)} onSubmit={handleEditProduct} submitLabel="บันทึกการปรับปรุง" disableCode />
-      )}
-
-      {isAdjustModalOpen && selectedProduct && (
-        <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-sm flex items-center justify-center p-4 z-50">
-          <div className="bg-white rounded-xl shadow-2xl max-w-md w-full overflow-hidden border border-slate-100 animate-scaleUp">
-            <div className={`px-6 py-4 flex items-center justify-between text-white ${adjustData.type === "in" ? "bg-emerald-600" : "bg-rose-600"}`}>
-              <h3 className="font-bold text-base flex items-center space-x-1">
-                {adjustData.type === "in" ? <><ArrowUpRight className="h-5 w-5" /><span>รับของเข้าคลังสินค้า</span></> : <><ArrowDownLeft className="h-5 w-5" /><span>จ่ายของออกจากคลัง (เบิกวัสดุ)</span></>}
-              </h3>
-              <button onClick={() => setIsAdjustModalOpen(false)} className="text-white/80 hover:text-white transition-colors"><X className="h-5 w-5" /></button>
+      {!currentUser ? (
+        <div className="flex-1 flex flex-col justify-center items-center px-4 py-12 animate-fadeIn">
+          <div className="bg-slate-900 border border-slate-800 p-6 rounded-2xl max-w-sm w-full space-y-6 shadow-xl text-center">
+            <div className="w-16 h-16 bg-blue-600/10 text-blue-500 border border-blue-500/20 rounded-full flex items-center justify-center mx-auto shadow-inner"><Lock className="h-7 w-7" /></div>
+            <div className="space-y-1">
+              <h2 className="text-lg font-black text-white">เข้าสู่ระบบเพื่อเดินงานเบิก</h2>
+              <p className="text-xs text-slate-400">ระบุรหัสประจำตัวช่างเพื่อตรวจสอบประวัติผู้เบิก</p>
             </div>
 
-            <form onSubmit={handleAdjustStock} className="p-6 space-y-4">
-              <div className="p-3 bg-slate-50 rounded border border-slate-100 text-xs space-y-1">
-                <p className="font-bold text-slate-500">สินค้าที่เลือก: <span className="text-slate-900">{selectedProduct.name}</span></p>
-                <p className="font-bold text-slate-500">รหัสสินค้า: <span className="font-mono text-slate-950">{selectedProduct.code}</span></p>
-                <p className="font-bold text-slate-500">ยอดคงเหลือปัจจุบัน: <span className="text-blue-700 text-sm font-extrabold">{selectedProduct.initial + selectedProduct.received - selectedProduct.issued} {selectedProduct.unit}</span></p>
+            <div className="bg-slate-950 p-3 rounded-xl border border-slate-800/80 text-left space-y-1">
+              <span className="text-[10px] text-slate-500 font-bold block uppercase tracking-wide">สิทธิ์เข้าใช้งานทดลอง:</span>
+              <div className="grid grid-cols-1 gap-1 text-[11px] text-slate-300">
+                {users.map((user) => (
+                  <p key={user.id}>{user.avatar} {user.name} PIN: <strong className="text-blue-400 font-mono">{user.pin}</strong></p>
+                ))}
               </div>
+            </div>
 
+            <form onSubmit={handleLogin} className="space-y-4">
               <div>
-                <label className="block text-xs font-bold text-slate-500 uppercase mb-1">ประเภทการทำรายการ</label>
-                <div className="grid grid-cols-2 gap-2">
-                  <button type="button" onClick={() => setAdjustData((prev) => ({ ...prev, type: "in" }))} className={`py-2 text-sm rounded font-bold transition-all border ${adjustData.type === "in" ? "bg-emerald-50 border-emerald-500 text-emerald-700" : "bg-white border-slate-200 text-slate-500 hover:bg-slate-50"}`}>+ นำเข้า (Receive)</button>
-                  <button type="button" onClick={() => setAdjustData((prev) => ({ ...prev, type: "out" }))} className={`py-2 text-sm rounded font-bold transition-all border ${adjustData.type === "out" ? "bg-rose-50 border-rose-500 text-rose-700" : "bg-white border-slate-200 text-slate-500 hover:bg-slate-50"}`}>- จ่ายออก (Issue/เบิก)</button>
-                </div>
+                <label className="block text-xs font-bold text-slate-400 text-left mb-1.5">รหัสผ่าน 4 หลัก (PIN)</label>
+                <input type="password" maxLength={4} required placeholder="ป้อนรหัสผ่าน 4 หลัก" value={pinInput} onChange={(e) => setPinInput(e.target.value)} className="w-full bg-slate-950 text-white text-center font-bold font-mono tracking-widest py-3 border border-slate-800 rounded-xl focus:outline-none focus:border-blue-500 text-sm" />
               </div>
 
-              <div className="grid grid-cols-2 gap-4">
-                <div>
-                  <label className="block text-xs font-bold text-slate-500 uppercase mb-1">จำนวนที่ทำรายการ ({selectedProduct.unit})</label>
-                  <input type="number" min="1" required value={adjustData.quantity} onChange={(e) => setAdjustData((prev) => ({ ...prev, quantity: Number.parseInt(e.target.value, 10) || 1 }))} className="w-full px-3 py-2 text-sm border border-slate-200 rounded focus:ring-2 focus:ring-blue-500 focus:outline-none text-center font-bold" />
-                </div>
-                <div>
-                  <label className="block text-xs font-bold text-slate-500 uppercase mb-1">ผู้เบิก/โครงการ/หมายเหตุ</label>
-                  <input type="text" placeholder="เช่น ช่างแดง, หน้างาน A" value={adjustData.note} onChange={(e) => setAdjustData((prev) => ({ ...prev, note: e.target.value }))} className="w-full px-3 py-2 text-sm border border-slate-200 rounded focus:ring-2 focus:ring-blue-500 focus:outline-none" />
-                </div>
-              </div>
+              {loginError && <p className="text-xs text-rose-400 font-bold bg-rose-500/10 border border-rose-500/20 p-2 rounded-lg">{loginError}</p>}
+              {loadError && <p className="text-xs text-amber-300 font-bold bg-amber-500/10 border border-amber-500/20 p-2 rounded-lg">{loadError}</p>}
 
-              <div className="pt-4 border-t border-slate-100 flex justify-end space-x-2">
-                <button type="button" onClick={() => setIsAdjustModalOpen(false)} className="px-4 py-2 border border-slate-200 rounded text-slate-500 text-sm font-medium hover:bg-slate-50">ยกเลิก</button>
-                <button type="submit" className={`px-4 py-2 rounded text-sm font-bold text-white shadow transition-colors ${adjustData.type === "in" ? "bg-emerald-600 hover:bg-emerald-700" : "bg-rose-600 hover:bg-rose-700"}`}>บันทึกรายการ</button>
-              </div>
+              <button type="submit" disabled={isLoading} className="w-full bg-blue-600 hover:bg-blue-500 text-white py-2.5 rounded-xl text-xs font-black transition-all shadow-lg disabled:opacity-60">{isLoading ? "กำลังโหลดข้อมูล..." : "ยืนยันเพื่อเข้าใช้งานคลัง"}</button>
             </form>
           </div>
         </div>
+      ) : (
+        <div className="max-w-7xl mx-auto w-full px-3 md:px-6 py-4 flex-1 flex flex-col md:flex-row gap-6">
+          <aside className="hidden md:block w-64 flex-shrink-0">
+            <nav className="bg-slate-900/60 p-4 rounded-2xl border border-slate-800 space-y-1">
+              <p className="px-3 text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-2">หน้าต่างผู้ใช้: {currentUser.role === "admin" ? "แอดมิน" : "ช่างหน้างาน"}</p>
+              {currentUser.role === "admin" && <SidebarButton active={activeTab === "dashboard"} onClick={() => setActiveTab("dashboard")} icon={<LayoutDashboard className="h-4 w-4" />} label="แผงวิเคราะห์สโตร์" />}
+              <SidebarButton active={activeTab === "inventory"} onClick={() => setActiveTab("inventory")} icon={<Package className="h-4 w-4" />} label="เช็คคลัง & ขอเบิก" right={<span className="text-[10px] bg-slate-800 px-2 py-0.5 rounded-full">{products.length}</span>} />
+              <SidebarButton active={activeTab === "transactions"} onClick={() => setActiveTab("transactions")} icon={<History className="h-4 w-4" />} label={currentUser.role === "admin" ? "คุมประวัติยืม-คืนทั้งหมด" : "ประวัติยืมของฉัน"} />
+            </nav>
+
+            <div className="mt-4 p-3 bg-slate-900/40 border border-slate-800 rounded-xl text-xs space-y-1.5 text-slate-400">
+              <p className="font-bold text-slate-300">💡 การควบคุมคุณภาพสต็อก</p>
+              <p>• ชำรุด: ของพังชำรุดคาปากไซต์งาน บันทึกส่งเคลม/สืบสวนหาเหตุผล</p>
+              <p>• สูญหาย: ของพัสดุหรือเครื่องมือที่หาไม่พบ ตราหน้าผู้รับผิดชอบคุมสต็อก</p>
+            </div>
+          </aside>
+
+          <main className="flex-1 space-y-4">
+            {loadError && <div className="rounded-xl border border-rose-500/20 bg-rose-500/10 p-3 text-xs font-bold text-rose-300">โหลดข้อมูลไม่สำเร็จ: {loadError}</div>}
+
+            {activeTab === "dashboard" && currentUser.role === "admin" && (
+              <div className="space-y-4 animate-fadeIn">
+                <div className="flex bg-slate-900 p-1 rounded-xl border border-slate-800 max-w-md">
+                  <button onClick={() => setDashboardSubTab("overview")} className={`flex-1 py-2 text-xs font-bold rounded-lg transition-all ${dashboardSubTab === "overview" ? "bg-blue-600 text-white" : "text-slate-400 hover:bg-slate-800"}`}>📈 ภาพรวมคลังกลางสุทธิ</button>
+                  <button onClick={() => setDashboardSubTab("monthly")} className={`flex-1 py-2 text-xs font-bold rounded-lg transition-all flex items-center justify-center space-x-1.5 ${dashboardSubTab === "monthly" ? "bg-blue-600 text-white" : "text-slate-400 hover:bg-slate-800"}`}><Calendar className="h-3.5 w-3.5" /><span>สรุปรายงานรายเดือน</span></button>
+                </div>
+
+                {dashboardSubTab === "overview" && (
+                  <div className="space-y-4 animate-fadeIn">
+                    <div className="grid grid-cols-2 lg:grid-cols-5 gap-2.5">
+                      <DashCard label="สต็อกชิ้นทั้งหมด" value={stats.totalQty} color="text-emerald-400" />
+                      <DashCard label="กำลังยืมใช้งาน" value={`${stats.activeBorrowsCount} เครื่องมือ`} color="text-amber-500" />
+                      <DashCard label="ชำรุดรวมสะสม" value={stats.totalDamaged} color="text-rose-500" />
+                      <DashCard label="สูญหายรวมสะสม" value={stats.totalLost} color="text-red-500" />
+                      <DashCard label="จุดสั่งซื้อด่วน" value={stats.lowStockCount} color="text-yellow-500" />
+                    </div>
+
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                      <Panel title="ติดตามความรับผิดชอบ (ของชำรุด/สูญหาย)" icon={<AlertCircle className="h-4 w-4" />} accent="text-rose-400">
+                        <div className="space-y-2 max-h-[300px] overflow-y-auto">
+                          {borrows.filter((b) => b.status === "lost" || b.status === "damaged").map((b) => (
+                            <div key={b.id} className="bg-slate-950/80 p-3 rounded-lg flex items-center justify-between border border-slate-900">
+                              <div>
+                                <p className="text-xs font-bold text-slate-200">{b.name} ({b.quantity} {b.unit})</p>
+                                <p className="text-[10px] text-slate-400">ผู้รับผิดชอบ: <strong className="text-blue-400">{b.userName}</strong> | วันแจ้ง: {b.date}</p>
+                                <p className="text-[9px] text-slate-500 italic mt-0.5">เหตุผล: {b.note}</p>
+                              </div>
+                              <span className={`text-[10px] px-2 py-0.5 rounded font-bold ${b.status === "lost" ? "bg-red-500/10 text-red-400 border border-red-500/20" : "bg-rose-500/10 text-rose-400 border border-rose-500/20"}`}>{b.status === "lost" ? "สูญหาย" : "ชำรุด"}</span>
+                            </div>
+                          ))}
+                        </div>
+                      </Panel>
+
+                      <Panel title="วัสดุและอะไหล่เหลือน้อยกว่าเกณฑ์เซฟตี้" icon={<AlertTriangle className="h-4 w-4" />} accent="text-amber-400">
+                        <div className="space-y-2 max-h-[300px] overflow-y-auto">
+                          {products.filter((p) => getBalance(p) <= p.safetyStock).map((p) => (
+                            <div key={p.id} className="bg-slate-950/80 p-3 rounded-lg flex items-center justify-between border border-slate-900">
+                              <div>
+                                <p className="text-xs font-bold text-slate-200">{p.name}</p>
+                                <p className="text-[10px] text-slate-500">สต็อกคงเหลือสุทธิ: <strong className="text-rose-400">{getBalance(p)} {p.unit}</strong> | จุดแจ้งสั่งเพิ่ม: {p.safetyStock}</p>
+                              </div>
+                              <span className="text-[10px] bg-rose-500/10 text-rose-400 px-2 py-0.5 rounded-full font-bold">ต้องจัดซื้อ</span>
+                            </div>
+                          ))}
+                        </div>
+                      </Panel>
+                    </div>
+                  </div>
+                )}
+
+                {dashboardSubTab === "monthly" && (
+                  <div className="space-y-4 animate-fadeIn">
+                    <div className="bg-slate-900 p-4 rounded-xl border border-slate-800 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                      <div>
+                        <h3 className="text-xs font-bold text-slate-200 flex items-center space-x-2"><Calendar className="h-4 w-4 text-blue-400" /><span>เลือกเดือนที่ต้องการออกรายงานบัญชี</span></h3>
+                        <p className="text-[10px] text-slate-500 mt-0.5">ระบบจะกรองและคำนวณผลลัพธ์เพื่อนำส่งตรวจสอบสต็อก</p>
+                      </div>
+                      <div className="flex items-center space-x-2">
+                        <select value={selectedMonth} onChange={(e) => setSelectedMonth(e.target.value)} className="bg-slate-950 text-white px-3 py-1.5 rounded-lg text-xs font-bold border border-slate-850 focus:outline-none focus:border-blue-500">
+                          {availableMonths.map((m) => <option key={m} value={m}>{m} (ปี-เดือน)</option>)}
+                        </select>
+                        <button onClick={() => handleMockExport(`REPORT_${selectedMonth}`)} className="bg-blue-600 hover:bg-blue-500 text-white px-3 py-1.5 rounded-lg text-xs font-bold flex items-center space-x-1"><Download className="h-3.5 w-3.5" /><span>พิมพ์ใบรายงาน</span></button>
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                      <DashCard label="ยอดเบิกของทั้งหมด" value={`${monthlyStats.totalIssued} ชิ้น/ม้วน`} color="text-blue-400" />
+                      <DashCard label="ยอดส่งของคืนสำเร็จ" value={`${monthlyStats.totalReturned} ชิ้น`} color="text-emerald-400" />
+                      <DashCard label="ชำรุดคาไซต์งาน" value={`${monthlyStats.totalDamaged} ชิ้น`} color="text-rose-500" />
+                      <DashCard label="ยอดสูญหายสะสม" value={`${monthlyStats.totalLost} ชิ้น`} color="text-red-500" />
+                    </div>
+
+                    <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+                      <Panel title="ท็อปวัสดุสิ้นเปลืองสูงสุด" icon={<Award className="h-4 w-4" />} accent="text-teal-400">
+                        <div className="space-y-2">
+                          {monthlyStats.topItems.map(([itemName, qty], idx) => (
+                            <div key={itemName} className="bg-slate-950 p-2.5 rounded-lg flex items-center justify-between border border-slate-900"><div className="flex items-center space-x-2"><span className="text-xs font-black text-slate-500">#{idx + 1}</span><span className="text-xs font-bold text-slate-200">{itemName}</span></div><span className="text-xs text-teal-400 font-extrabold">{qty} ชิ้นที่ใช้จริง</span></div>
+                          ))}
+                          {monthlyStats.topItems.length === 0 && <p className="text-center py-10 text-slate-500 text-xs">ไม่มีสถิติเบิกจ่ายวัสดุสิ้นเปลืองในเดือนนี้</p>}
+                        </div>
+                      </Panel>
+
+                      <Panel title={`รายละเอียดใบเบิกและปรับยอด (${selectedMonth})`} icon={<TrendingUp className="h-4 w-4" />} accent="text-slate-300" className="lg:col-span-2">
+                        <div className="space-y-2 max-h-[220px] overflow-y-auto">
+                          {monthlyStats.monthlyBorrows.map((b) => (
+                            <div key={b.id} className="bg-slate-950 p-2.5 rounded-lg flex items-center justify-between text-[11px] border border-slate-900">
+                              <div>
+                                <p className="font-bold text-slate-200">{b.name} ({b.quantity} {b.unit})</p>
+                                <p className="text-[10px] text-slate-500">ผู้รับผิดชอบ: {b.userName} | วันที่: {b.date}</p>
+                              </div>
+                              <BorrowStatusBadge status={b.status} />
+                            </div>
+                          ))}
+                          {monthlyStats.monthlyBorrows.length === 0 && <p className="text-center py-10 text-slate-500 text-xs">ยังไม่มีใบเบิกพัสดุในเดือน {selectedMonth}</p>}
+                        </div>
+                      </Panel>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {activeTab === "inventory" && (
+              <div className="space-y-3.5 animate-fadeIn">
+                <div className="bg-slate-900/70 p-3 rounded-xl border border-slate-800 space-y-2.5">
+                  <div className="relative">
+                    <Search className="absolute left-3 top-3 h-4 w-4 text-slate-500" />
+                    <input type="text" placeholder="พิมพ์รหัสพัสดุ / ชื่ออุปกรณ์เพื่อค้นหา..." value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} className="w-full pl-9 pr-4 py-2.5 bg-slate-950 border border-slate-800 rounded-lg text-xs focus:ring-1 focus:ring-blue-500 focus:outline-none text-white" />
+                  </div>
+                  <div className="space-y-1">
+                    <div className="flex justify-between items-center">
+                      <span className="text-[10px] text-slate-500 font-bold block">กลุ่มหมวดหมู่:</span>
+                      {currentUser.role === "admin" && <button onClick={openAddModal} className="text-[10px] text-blue-400 font-bold hover:underline flex items-center space-x-1"><Plus className="h-3 w-3" /><span>เพิ่มพัสดุใหม่</span></button>}
+                    </div>
+                    <div className="flex overflow-x-auto space-x-1.5 pb-1 -mx-1 scrollbar-none">
+                      {categories.map((c) => (
+                        <button key={c} onClick={() => setSelectedCategory(c)} className={`px-3 py-1.5 rounded-full text-[11px] font-bold whitespace-nowrap transition-all shrink-0 ${selectedCategory === c ? "bg-blue-600 text-white" : "bg-slate-950 text-slate-400 border border-slate-800 hover:bg-slate-900"}`}>{c}</button>
+                      ))}
+                    </div>
+                    <div className="flex space-x-2 overflow-x-auto pb-1">
+                      {[
+                        { value: "ทั้งหมด", label: "ทั้งหมด" },
+                        { value: "normal", label: "ปกติ" },
+                        { value: "low", label: "ใกล้หมด" },
+                        { value: "empty", label: "หมด" },
+                      ].map((item) => (
+                        <button key={item.value} onClick={() => setSelectedStockStatus(item.value)} className={`px-3 py-1 rounded-full text-[10px] font-bold whitespace-nowrap ${selectedStockStatus === item.value ? "bg-slate-200 text-slate-950" : "bg-slate-950 text-slate-400 border border-slate-800"}`}>{item.label}</button>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+
+                <div className="block md:hidden space-y-2.5">
+                  {filteredProducts.map((p) => {
+                    const balance = getBalance(p);
+                    let colorClass = "border-emerald-500/20 bg-emerald-500/5 text-emerald-400";
+                    if (balance === 0) colorClass = "border-rose-500/20 bg-rose-500/5 text-rose-400";
+                    else if (balance <= p.safetyStock) colorClass = "border-amber-500/20 bg-amber-500/5 text-amber-400";
+
+                    return (
+                      <div key={p.id} className="bg-slate-900/40 border border-slate-800 rounded-xl p-3.5 space-y-3 shadow-md">
+                        <div className="flex items-center justify-between">
+                          <div className="flex items-center space-x-1.5">
+                            <span className="font-mono text-[10px] text-slate-500 font-bold">{p.code}</span>
+                            <span className={`text-[9px] px-1.5 py-0.2 rounded font-bold uppercase ${p.itemType === "returnable" ? "bg-indigo-500/20 text-indigo-400 border border-indigo-500/30" : "bg-teal-500/20 text-teal-400 border border-teal-500/30"}`}>{p.itemType === "returnable" ? "🔄 ยืม-คืน" : "⏳ ใช้เศษหมดไป"}</span>
+                          </div>
+                          <span className="text-[9px] bg-slate-950 px-2 py-0.5 rounded-full text-slate-400">{p.category}</span>
+                        </div>
+                        <div className="flex items-center justify-between">
+                          <div className="max-w-[70%]">
+                            <h4 className="text-xs font-bold text-slate-100">{p.name}</h4>
+                            <div className="flex flex-wrap gap-1 mt-1 text-[9px] text-slate-400">
+                              {p.damaged > 0 && <span className="text-rose-400 bg-rose-500/10 px-1 rounded">ชำรุด: {p.damaged}</span>}
+                              {p.lost > 0 && <span className="text-red-400 bg-red-500/10 px-1 rounded">สูญหาย: {p.lost}</span>}
+                            </div>
+                          </div>
+                          <div className="text-right">
+                            <p className="text-[9px] text-slate-500">คงคลังสุทธิ</p>
+                            <span className={`inline-block px-3 py-1 rounded-lg text-sm font-extrabold border ${colorClass}`}>{balance}</span>
+                          </div>
+                        </div>
+                        <div className="pt-2 border-t border-slate-800/80 flex items-center justify-between gap-2">
+                          <span className="text-[10px] text-slate-500">เกณฑ์เซฟตี้: <strong>{p.safetyStock}</strong> {p.unit}</span>
+                          <div className="flex space-x-1">
+                            <button onClick={() => openBorrowModal(p)} disabled={balance <= 0} className={`px-3 py-1.5 rounded-lg text-[11px] font-black transition-all ${balance <= 0 ? "bg-slate-800 text-slate-500 cursor-not-allowed" : "bg-blue-600 hover:bg-blue-500 text-white"}`}>ขอเบิกอุปกรณ์</button>
+                            {currentUser.role === "admin" && <><button onClick={() => openEditModal(p)} className="p-1.5 bg-slate-950 text-slate-400 border border-slate-800 rounded-lg"><Edit className="h-3.5 w-3.5" /></button><button onClick={() => triggerDeleteProduct(p.id, p.name)} className="p-1.5 bg-slate-950 text-rose-500 border border-slate-800 rounded-lg"><Trash2 className="h-3.5 w-3.5" /></button></>}
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+
+                <div className="hidden md:block overflow-x-auto border border-slate-800 rounded-xl bg-slate-950">
+                  <table className="min-w-full divide-y divide-slate-800 text-xs">
+                    <thead className="bg-slate-900 text-slate-400 font-bold uppercase">
+                      <tr>
+                        <th className="px-3 py-3 text-left">รหัส</th>
+                        <th className="px-3 py-3 text-left">ประเภทวัสดุ</th>
+                        <th className="px-4 py-3 text-left">รายการวัสดุ</th>
+                        <th className="px-3 py-3 text-center">หน่วย</th>
+                        <th className="px-2 py-3 text-center bg-blue-500/5">ยกมา</th>
+                        <th className="px-2 py-3 text-center bg-emerald-500/5">รับเข้า</th>
+                        <th className="px-2 py-3 text-center bg-rose-500/5">จ่ายออก</th>
+                        <th className="px-2 py-3 text-center bg-red-500/5 text-red-400">ชำรุด</th>
+                        <th className="px-2 py-3 text-center bg-orange-500/5 text-orange-400">สูญหาย</th>
+                        <th className="px-3 py-3 text-center">คงเหลือสุทธิ</th>
+                        <th className="px-3 py-3 text-left">จุดสั่ง</th>
+                        <th className="px-4 py-3 text-right">ดำเนินการ</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-800">
+                      {filteredProducts.map((p) => {
+                        const balance = getBalance(p);
+                        return (
+                          <tr key={p.id} className="hover:bg-slate-900/40">
+                            <td className="px-3 py-3 font-mono font-bold text-slate-400">{p.code}</td>
+                            <td className="px-3 py-3"><span className={`px-2 py-0.5 rounded text-[10px] font-bold ${p.itemType === "returnable" ? "bg-indigo-500/10 text-indigo-400 border border-indigo-500/25" : "bg-teal-500/10 text-teal-400 border border-teal-500/25"}`}>{p.itemType === "returnable" ? "ยืม-คืน" : "ใช้เศษหมดไป"}</span></td>
+                            <td className="px-4 py-3"><p className="font-bold text-slate-200">{p.name}</p><span className="text-[10px] text-slate-500">{p.category}</span></td>
+                            <td className="px-3 py-3 text-center text-slate-400">{p.unit}</td>
+                            <td className="px-2 py-3 text-center bg-blue-500/5 text-slate-300">{p.initial}</td>
+                            <td className="px-2 py-3 text-center bg-emerald-500/5 text-emerald-400">{p.received}</td>
+                            <td className="px-2 py-3 text-center bg-rose-500/5 text-rose-400">{p.issued}</td>
+                            <td className="px-2 py-3 text-center bg-red-500/5 text-rose-400 font-bold">{p.damaged}</td>
+                            <td className="px-2 py-3 text-center bg-orange-500/5 text-orange-400 font-bold">{p.lost}</td>
+                            <td className="px-3 py-3 text-center"><span className={`px-2 py-0.5 rounded font-extrabold ${balance === 0 ? "bg-rose-500/10 text-rose-400 border border-rose-500/20" : balance <= p.safetyStock ? "bg-amber-500/10 text-amber-400 border border-amber-500/20" : "bg-emerald-500/10 text-emerald-400 border border-emerald-500/20"}`}>{balance}</span></td>
+                            <td className="px-3 py-3 text-slate-400">{p.safetyStock} {p.unit}</td>
+                            <td className="px-4 py-3 text-right space-x-1 whitespace-nowrap">
+                              <button onClick={() => openBorrowModal(p)} disabled={balance <= 0} className={`px-2.5 py-1 rounded text-[11px] font-bold ${balance <= 0 ? "bg-slate-800 text-slate-600 cursor-not-allowed" : "bg-blue-600 hover:bg-blue-500 text-white"}`}>ขอเบิก</button>
+                              {currentUser.role === "admin" && <><button onClick={() => openEditModal(p)} className="p-1 text-slate-400 hover:text-white"><Edit className="h-4.5 w-4.5" /></button><button onClick={() => triggerDeleteProduct(p.id, p.name)} className="p-1 text-rose-400 hover:text-rose-300"><Trash2 className="h-4.5 w-4.5" /></button></>}
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+
+            {activeTab === "transactions" && (
+              <div className="space-y-3.5 animate-fadeIn">
+                <div className="bg-slate-900/70 p-3 rounded-xl border border-slate-800">
+                  <p className="text-xs font-bold text-slate-300 mb-2">{currentUser.role === "admin" ? "รายการยืม-คืนทั้งหมดของไซต์งาน" : "รายการยืมอุปกรณ์ของฉัน"}</p>
+                  <div className="space-y-2 max-h-[70vh] overflow-y-auto">
+                    {visibleBorrows.map((borrow) => (
+                      <div key={borrow.id} className="bg-slate-950 border border-slate-800 rounded-xl p-3 flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+                        <div>
+                          <div className="flex items-center gap-2 flex-wrap">
+                            <span className="text-xs font-mono text-slate-500">{borrow.code}</span>
+                            <BorrowStatusBadge status={borrow.status} />
+                            <span className={`text-[9px] px-1.5 py-0.5 rounded font-bold uppercase ${borrow.itemType === "returnable" ? "bg-indigo-500/20 text-indigo-400 border border-indigo-500/30" : "bg-teal-500/20 text-teal-400 border border-teal-500/30"}`}>{borrow.itemType === "returnable" ? "ยืม-คืน" : "ใช้เศษหมดไป"}</span>
+                          </div>
+                          <p className="text-sm font-bold text-slate-200 mt-1">{borrow.name} ({borrow.quantity} {borrow.unit})</p>
+                          <p className="text-[10px] text-slate-500">ผู้เบิก: {borrow.userName} | วันที่: {borrow.date}{borrow.returnDate ? ` | คืน: ${borrow.returnDate}` : ""}</p>
+                          <p className="text-[10px] text-slate-500 mt-1">{borrow.note}</p>
+                        </div>
+
+                        <div className="flex flex-wrap gap-2 justify-end">
+                          {currentUser.role === "admin" && borrow.status === "borrowing" && borrow.itemType === "returnable" && <ActionButton onClick={() => void handleReturnProduct(borrow.id)} label="รับคืน" icon={<RotateCcw className="h-3.5 w-3.5" />} variant="success" />}
+                          {currentUser.role === "admin" && borrow.itemType === "consumable" && (borrow.status === "consumed" || borrow.status === "fully_consumed") && <ActionButton onClick={() => handlePartialReturnOpen(borrow)} label="คืนเศษ" icon={<RotateCcw className="h-3.5 w-3.5" />} variant="secondary" />}
+                          {currentUser.role === "admin" && borrow.itemType === "consumable" && borrow.status === "consumed" && <ActionButton onClick={() => void handleMarkFullyConsumed(borrow.id)} label="ใช้หมดแล้ว" icon={<Flame className="h-3.5 w-3.5" />} variant="warning" />}
+                          {currentUser.role === "admin" && (borrow.status === "borrowing" || borrow.status === "consumed") && <ActionButton onClick={() => handleIssueReportOpen(borrow)} label="แจ้งชำรุด/สูญหาย" icon={<AlertTriangle className="h-3.5 w-3.5" />} variant="danger" />}
+                        </div>
+                      </div>
+                    ))}
+                    {visibleBorrows.length === 0 && <p className="text-center py-12 text-slate-500 text-xs">ยังไม่มีประวัติรายการในระบบ</p>}
+                  </div>
+                </div>
+              </div>
+            )}
+          </main>
+        </div>
       )}
 
-      <footer className="bg-white border-t border-slate-200 py-6 mt-12">
-        <div className="max-w-7xl mx-auto px-4 text-center text-xs text-slate-500 space-y-1">
-          <p>© 2026 STK-Manager Pro - NextJS Dashboard Mockup. All rights reserved.</p>
-          <p className="text-slate-400">ข้อมูลถูกบันทึกใน SQLite ผ่าน API ของ Next.js และนำเข้ารายการเริ่มต้นจากไฟล์ Excel แล้ว</p>
-        </div>
-      </footer>
+      {isAddModalOpen && <ProductModal title="เพิ่มสินค้าใหม่" product={currentProduct} setProduct={setCurrentProduct} onClose={() => setIsAddModalOpen(false)} onSubmit={handleAddProduct} />}
+      {isEditModalOpen && <ProductModal title="แก้ไขข้อมูลสินค้า" product={currentProduct} setProduct={setCurrentProduct} onClose={() => setIsEditModalOpen(false)} onSubmit={handleEditProduct} />}
+
+      {isBorrowModalOpen && selectedProductForBorrow && (
+        <FormShell title={`ขอเบิก: ${selectedProductForBorrow.name}`} onClose={() => setIsBorrowModalOpen(false)}>
+          <form onSubmit={handleBorrowSubmit} className="space-y-4">
+            <div className="text-xs text-slate-400">คงเหลือสุทธิ: <strong className="text-white">{getBalance(selectedProductForBorrow)} {selectedProductForBorrow.unit}</strong></div>
+            <div>
+              <label className="block text-xs text-slate-400 mb-1">จำนวน</label>
+              <input type="number" min="1" value={borrowFormData.quantity} onChange={(e) => setBorrowFormData((prev) => ({ ...prev, quantity: Number(e.target.value) || 1 }))} className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-sm" />
+            </div>
+            <div>
+              <label className="block text-xs text-slate-400 mb-1">หมายเหตุ</label>
+              <textarea value={borrowFormData.note} onChange={(e) => setBorrowFormData((prev) => ({ ...prev, note: e.target.value }))} className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-sm min-h-24" />
+            </div>
+            <button type="submit" className="w-full bg-blue-600 hover:bg-blue-500 text-white py-2 rounded-lg text-sm font-bold">ยืนยันการเบิก</button>
+          </form>
+        </FormShell>
+      )}
+
+      {isIssueModalOpen && selectedBorrowForIssue && (
+        <FormShell title={`แจ้งปัญหา: ${selectedBorrowForIssue.name}`} onClose={() => setIsIssueModalOpen(false)}>
+          <form onSubmit={handleIssueReportSubmit} className="space-y-4">
+            <div className="grid grid-cols-2 gap-2">
+              <button type="button" onClick={() => setIssueFormData((prev) => ({ ...prev, type: "damaged" }))} className={`py-2 rounded-lg text-sm font-bold ${issueFormData.type === "damaged" ? "bg-rose-600 text-white" : "bg-slate-950 border border-slate-800 text-slate-300"}`}>ชำรุด</button>
+              <button type="button" onClick={() => setIssueFormData((prev) => ({ ...prev, type: "lost" }))} className={`py-2 rounded-lg text-sm font-bold ${issueFormData.type === "lost" ? "bg-red-600 text-white" : "bg-slate-950 border border-slate-800 text-slate-300"}`}>สูญหาย</button>
+            </div>
+            <div>
+              <label className="block text-xs text-slate-400 mb-1">จำนวน</label>
+              <input type="number" min="1" value={issueFormData.quantity} onChange={(e) => setIssueFormData((prev) => ({ ...prev, quantity: Number(e.target.value) || 1 }))} className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-sm" />
+            </div>
+            <div>
+              <label className="block text-xs text-slate-400 mb-1">เหตุผล</label>
+              <textarea value={issueFormData.note} onChange={(e) => setIssueFormData((prev) => ({ ...prev, note: e.target.value }))} className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-sm min-h-24" />
+            </div>
+            <button type="submit" className="w-full bg-amber-500 hover:bg-amber-400 text-slate-950 py-2 rounded-lg text-sm font-bold">บันทึกรายงาน</button>
+          </form>
+        </FormShell>
+      )}
+
+      {isPartialReturnModalOpen && selectedBorrowForPartialReturn && (
+        <FormShell title={`คืนเศษวัสดุ: ${selectedBorrowForPartialReturn.name}`} onClose={() => setIsPartialReturnModalOpen(false)}>
+          <form onSubmit={handlePartialReturnSubmit} className="space-y-4">
+            <div>
+              <label className="block text-xs text-slate-400 mb-1">จำนวนที่คืน</label>
+              <input type="number" min="0.01" step="0.01" value={partialReturnQty} onChange={(e) => setPartialReturnQty(e.target.value)} className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-sm" />
+            </div>
+            <button type="submit" className="w-full bg-emerald-600 hover:bg-emerald-500 text-white py-2 rounded-lg text-sm font-bold">บันทึกคืนเศษ</button>
+          </form>
+        </FormShell>
+      )}
+
+      {deleteConfirm.isOpen && (
+        <FormShell title="ยืนยันการลบสินค้า" onClose={() => setDeleteConfirm({ isOpen: false, productId: null, productName: "" })}>
+          <div className="space-y-4 text-sm text-slate-300">
+            <p>ต้องการลบรายการ <strong>{deleteConfirm.productName}</strong> ใช่หรือไม่</p>
+            <div className="flex gap-2">
+              <button onClick={() => setDeleteConfirm({ isOpen: false, productId: null, productName: "" })} className="flex-1 bg-slate-900 border border-slate-800 py-2 rounded-lg">ยกเลิก</button>
+              <button onClick={() => void executeDeleteProduct()} className="flex-1 bg-rose-600 hover:bg-rose-500 py-2 rounded-lg text-white font-bold">ลบสินค้า</button>
+            </div>
+          </div>
+        </FormShell>
+      )}
     </div>
   );
 }
 
-function SidebarButton({ active, onClick, icon, label }: { active: boolean; onClick: () => void; icon: ReactNode; label: string }) {
+function SidebarButton({ active, onClick, icon, label, right }: { active: boolean; onClick: () => void; icon: ReactNode; label: string; right?: ReactNode }) {
   return (
-    <button onClick={onClick} className={`w-full flex items-center space-x-3 px-3 py-2.5 text-sm font-medium rounded-lg transition-colors ${active ? "bg-blue-50 text-blue-700" : "text-slate-600 hover:bg-slate-50 hover:text-slate-950"}`}>
+    <button onClick={onClick} className={`w-full flex items-center justify-between px-3 py-2 text-sm font-medium rounded-lg transition-all ${active ? "bg-blue-600 text-white" : "text-slate-400 hover:bg-slate-800"}`}>
+      <div className="flex items-center space-x-2">{icon}<span>{label}</span></div>
+      {right ?? <ChevronRight className="h-3.5 w-3.5" />}
+    </button>
+  );
+}
+
+function DashCard({ label, value, color }: { label: string; value: ReactNode; color: string }) {
+  return (
+    <div className="bg-slate-900/50 p-3.5 rounded-xl border border-slate-800/80">
+      <p className="text-[9px] text-slate-500 uppercase tracking-wider">{label}</p>
+      <p className={`text-xl font-black mt-1 ${color}`}>{value}</p>
+    </div>
+  );
+}
+
+function Panel({ title, icon, accent, className, children }: { title: string; icon: ReactNode; accent: string; className?: string; children: ReactNode }) {
+  return (
+    <div className={`bg-slate-900/60 p-4 rounded-xl border border-slate-800 space-y-3 ${className ?? ""}`}>
+      <div className="flex items-center justify-between border-b border-slate-800 pb-2">
+        <span className={`text-xs font-bold flex items-center space-x-1 ${accent}`}>{icon}<span>{title}</span></span>
+      </div>
+      {children}
+    </div>
+  );
+}
+
+function BorrowStatusBadge({ status }: { status: Borrow["status"] }) {
+  const config: Record<Borrow["status"], string> = {
+    borrowing: "bg-amber-500/10 text-amber-400",
+    returned: "bg-emerald-500/10 text-emerald-400",
+    consumed: "bg-slate-800 text-slate-400",
+    fully_consumed: "bg-orange-500/10 text-orange-400",
+    damaged: "bg-rose-500/10 text-rose-400",
+    lost: "bg-red-500/10 text-red-400",
+  };
+
+  const label: Record<Borrow["status"], string> = {
+    borrowing: "ค้างยืม",
+    returned: "คืนแล้ว",
+    consumed: "ใช้ไป",
+    fully_consumed: "ใช้หมด",
+    damaged: "ชำรุด",
+    lost: "สูญหาย",
+  };
+
+  return <span className={`px-1.5 py-0.5 rounded text-[9px] font-bold ${config[status]}`}>{label[status]}</span>;
+}
+
+function ActionButton({ onClick, label, icon, variant }: { onClick: () => void; label: string; icon: ReactNode; variant: "success" | "secondary" | "warning" | "danger" }) {
+  const styles = {
+    success: "bg-emerald-600 hover:bg-emerald-500 text-white",
+    secondary: "bg-slate-900 border border-slate-800 text-slate-200 hover:bg-slate-800",
+    warning: "bg-amber-500 text-slate-950 hover:bg-amber-400",
+    danger: "bg-rose-600 hover:bg-rose-500 text-white",
+  };
+
+  return (
+    <button onClick={onClick} className={`px-3 py-1.5 rounded-lg text-[11px] font-bold flex items-center gap-1 ${styles[variant]}`}>
       {icon}
       <span>{label}</span>
     </button>
   );
 }
 
-function StatCard({ icon, color, label, value }: { icon: ReactNode; color: "blue" | "emerald" | "amber" | "rose"; label: string; value: string }) {
-  const styles = {
-    blue: "bg-blue-50 text-blue-600",
-    emerald: "bg-emerald-50 text-emerald-600",
-    amber: "bg-amber-50 text-amber-600",
-    rose: "bg-rose-50 text-rose-600",
-  };
-
+function FormShell({ title, onClose, children }: { title: string; onClose: () => void; children: ReactNode }) {
   return (
-    <div className="bg-white p-5 rounded-xl border border-slate-200 shadow-sm flex items-center space-x-4">
-      <div className={`p-3 rounded-lg ${styles[color]}`}>{icon}</div>
-      <div>
-        <p className="text-xs font-medium text-slate-500 uppercase">{label}</p>
-        <p className="text-2xl font-bold text-slate-900">{value}</p>
+    <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+      <div className="bg-slate-900 border border-slate-800 rounded-2xl w-full max-w-md p-5 space-y-4 shadow-2xl">
+        <div className="flex items-center justify-between">
+          <h3 className="text-sm font-black text-white">{title}</h3>
+          <button onClick={onClose} className="text-slate-400 hover:text-white"><X className="h-4 w-4" /></button>
+        </div>
+        {children}
       </div>
     </div>
   );
 }
 
-function ProductModal({ title, product, setProduct, onClose, onSubmit, submitLabel, disableCode = false }: { title: string; product: ProductForm; setProduct: Dispatch<SetStateAction<ProductForm>>; onClose: () => void; onSubmit: (e: FormEvent<HTMLFormElement>) => void; submitLabel: string; disableCode?: boolean }) {
+function ProductModal({ title, product, setProduct, onClose, onSubmit }: { title: string; product: ProductForm; setProduct: (updater: (prev: ProductForm) => ProductForm) => void; onClose: () => void; onSubmit: (e: FormEvent<HTMLFormElement>) => void }) {
   return (
-    <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-sm flex items-center justify-center p-4 z-50">
-      <div className="bg-white rounded-xl shadow-2xl max-w-md w-full overflow-hidden border border-slate-100 animate-scaleUp">
-        <div className="bg-slate-900 text-white px-6 py-4 flex items-center justify-between">
-          <h3 className="font-bold text-base">{title}</h3>
-          <button onClick={onClose} className="text-slate-400 hover:text-white transition-colors"><X className="h-5 w-5" /></button>
+    <FormShell title={title} onClose={onClose}>
+      <form onSubmit={onSubmit} className="space-y-3">
+        <div className="grid grid-cols-2 gap-3">
+          <Field label="รหัสสินค้า"><input value={product.code} onChange={(e) => setProduct((prev) => ({ ...prev, code: e.target.value }))} className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-sm" /></Field>
+          <Field label="หน่วย"><input value={product.unit} onChange={(e) => setProduct((prev) => ({ ...prev, unit: e.target.value }))} className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-sm" /></Field>
         </div>
-        <form onSubmit={onSubmit} className="p-6 space-y-4">
-          <div className="grid grid-cols-2 gap-4">
-            <div>
-              <label className="block text-xs font-bold text-slate-500 uppercase mb-1">รหัสสินค้า</label>
-              <input type="text" required disabled={disableCode} value={product.code} onChange={(e) => setProduct((prev) => ({ ...prev, code: e.target.value }))} className="w-full px-3 py-2 text-sm border border-slate-200 rounded focus:ring-2 focus:ring-blue-500 focus:outline-none font-mono disabled:bg-slate-100 disabled:text-slate-500" />
-            </div>
-            <div>
-              <label className="block text-xs font-bold text-slate-500 uppercase mb-1">หมวดหมู่</label>
-              <input type="text" required value={product.category} onChange={(e) => setProduct((prev) => ({ ...prev, category: e.target.value }))} className="w-full px-3 py-2 text-sm border border-slate-200 rounded focus:ring-2 focus:ring-blue-500 focus:outline-none" />
-            </div>
-          </div>
+        <Field label="หมวดหมู่"><input value={product.category} onChange={(e) => setProduct((prev) => ({ ...prev, category: e.target.value }))} className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-sm" /></Field>
+        <Field label="ชื่อรายการ"><input value={product.name} onChange={(e) => setProduct((prev) => ({ ...prev, name: e.target.value }))} className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-sm" /></Field>
+        <div className="grid grid-cols-2 gap-3">
+          <Field label="ยกมา"><input type="number" value={product.initial} onChange={(e) => setProduct((prev) => ({ ...prev, initial: Number(e.target.value) || 0 }))} className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-sm" /></Field>
+          <Field label="รับเข้า"><input type="number" value={product.received} onChange={(e) => setProduct((prev) => ({ ...prev, received: Number(e.target.value) || 0 }))} className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-sm" /></Field>
+        </div>
+        <div className="grid grid-cols-2 gap-3">
+          <Field label="ชำรุด"><input type="number" value={product.damaged} onChange={(e) => setProduct((prev) => ({ ...prev, damaged: Number(e.target.value) || 0 }))} className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-sm" /></Field>
+          <Field label="สูญหาย"><input type="number" value={product.lost} onChange={(e) => setProduct((prev) => ({ ...prev, lost: Number(e.target.value) || 0 }))} className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-sm" /></Field>
+        </div>
+        <div className="grid grid-cols-2 gap-3">
+          <Field label="จุดสั่งซื้อ"><input type="number" value={product.safetyStock} onChange={(e) => setProduct((prev) => ({ ...prev, safetyStock: Number(e.target.value) || 0 }))} className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-sm" /></Field>
+          <Field label="ประเภท">
+            <select value={product.itemType} onChange={(e) => setProduct((prev) => ({ ...prev, itemType: e.target.value as ProductForm["itemType"] }))} className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-sm">
+              <option value="returnable">ยืม-คืน</option>
+              <option value="consumable">สิ้นเปลือง</option>
+            </select>
+          </Field>
+        </div>
+        <button type="submit" className="w-full bg-blue-600 hover:bg-blue-500 text-white py-2 rounded-lg text-sm font-bold">บันทึก</button>
+      </form>
+    </FormShell>
+  );
+}
 
-          <div>
-            <label className="block text-xs font-bold text-slate-500 uppercase mb-1">ชื่อรายการสินค้า</label>
-            <input type="text" placeholder="เช่น ตะปู 3 นิ้ว, ค้อน, ฯลฯ" required value={product.name} onChange={(e) => setProduct((prev) => ({ ...prev, name: e.target.value }))} className="w-full px-3 py-2 text-sm border border-slate-200 rounded focus:ring-2 focus:ring-blue-500 focus:outline-none" />
-          </div>
-
-          <div className="grid grid-cols-2 gap-4">
-            <div>
-              <label className="block text-xs font-bold text-slate-500 uppercase mb-1">หน่วยนับ</label>
-              <select value={product.unit} onChange={(e) => setProduct((prev) => ({ ...prev, unit: e.target.value }))} className="w-full px-3 py-2 text-sm border border-slate-200 rounded focus:ring-2 focus:ring-blue-500 focus:outline-none">
-                <option value="อัน">อัน</option>
-                <option value="ม้วน">ม้วน</option>
-                <option value="กล่อง">กล่อง</option>
-                <option value="ถุง">ถุง</option>
-                <option value="กิโลกรัม">กิโลกรัม</option>
-              </select>
-            </div>
-            <div>
-              <label className="block text-xs font-bold text-slate-500 uppercase mb-1">ยอดยกมาเริ่มต้น</label>
-              <input type="number" min="0" required value={product.initial} onChange={(e) => setProduct((prev) => ({ ...prev, initial: Number.parseInt(e.target.value, 10) || 0 }))} className="w-full px-3 py-2 text-sm border border-slate-200 rounded focus:ring-2 focus:ring-blue-500 focus:outline-none" />
-            </div>
-          </div>
-
-          <div className="pt-4 border-t border-slate-100 flex justify-end space-x-2">
-            <button type="button" onClick={onClose} className="px-4 py-2 border border-slate-200 rounded text-slate-500 text-sm font-medium hover:bg-slate-50">ยกเลิก</button>
-            <button type="submit" className="px-4 py-2 bg-blue-600 text-white rounded text-sm font-bold hover:bg-blue-700 shadow">{submitLabel}</button>
-          </div>
-        </form>
-      </div>
-    </div>
+function Field({ label, children }: { label: string; children: ReactNode }) {
+  return (
+    <label className="block text-xs text-slate-400 space-y-1">
+      <span>{label}</span>
+      {children}
+    </label>
   );
 }

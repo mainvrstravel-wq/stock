@@ -8,34 +8,70 @@ datasource db {
   directUrl = env("DIRECT_URL")
 }
 
+model User {
+  id         String         @id @default(cuid())
+  name       String
+  role       UserRole
+  pin        String         @unique
+  avatar     String
+  department String
+  createdAt  DateTime       @default(now())
+  updatedAt  DateTime       @updatedAt
+  borrows    BorrowRecord[]
+}
+
 model Product {
-  id             String        @id @default(cuid())
-  code           String        @unique
-  category       String
-  name           String
-  unit           String
-  openingBalance Float         @default(0)
-  createdAt      DateTime      @default(now())
-  updatedAt      DateTime      @updatedAt
-  transactions   Transaction[]
+  id          String         @id @default(cuid())
+  code        String         @unique
+  category    String
+  name        String
+  unit        String
+  initialQty  Float          @default(0)
+  receivedQty Float          @default(0)
+  issuedQty   Float          @default(0)
+  damagedQty  Float          @default(0)
+  lostQty     Float          @default(0)
+  safetyStock Float          @default(5)
+  itemType    ItemType       @default(RETURNABLE)
+  createdAt   DateTime       @default(now())
+  updatedAt   DateTime       @updatedAt
+  borrows     BorrowRecord[]
 }
 
-model Transaction {
-  id        String          @id @default(cuid())
-  productId String
-  type      TransactionType
-  quantity  Float
-  note      String          @default("")
-  date      DateTime
-  createdAt DateTime        @default(now())
-  updatedAt DateTime        @updatedAt
-  product   Product         @relation(fields: [productId], references: [id], onDelete: Cascade)
+model BorrowRecord {
+  id               String       @id @default(cuid())
+  productId        String
+  userId           String
+  quantity         Float
+  status           BorrowStatus
+  leftoverReturned Float        @default(0)
+  borrowedAt       DateTime
+  returnedAt       DateTime?
+  note             String       @default("")
+  createdAt        DateTime     @default(now())
+  updatedAt        DateTime     @updatedAt
+  product          Product      @relation(fields: [productId], references: [id], onDelete: Cascade)
+  user             User         @relation(fields: [userId], references: [id], onDelete: Cascade)
 
-  @@index([productId, date])
+  @@index([productId, borrowedAt])
+  @@index([userId, borrowedAt])
 }
 
-enum TransactionType {
-  INITIAL
-  IN
-  OUT
+enum UserRole {
+  ADMIN
+  WORKER
+}
+
+enum ItemType {
+  RETURNABLE
+  CONSUMABLE
+}
+
+enum BorrowStatus {
+  BORROWING
+  RETURNED
+  CONSUMED
+  FULLY_CONSUMED
+  DAMAGED
+  LOST
 }

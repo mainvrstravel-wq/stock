@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 import prismaPkg from "@prisma/client";
 import XLSX from "xlsx";
 
-const { PrismaClient, TransactionType } = prismaPkg;
+const { PrismaClient } = prismaPkg;
 
 const prisma = new PrismaClient();
 
@@ -15,6 +15,12 @@ const excelPath = process.env.EXCEL_IMPORT_PATH
   ? path.resolve(projectRoot, process.env.EXCEL_IMPORT_PATH)
   : path.resolve(projectRoot, "..", "สรุปรายการวัสดุเดือน เม.ย.69.xlsx");
 
+const MOCK_USERS = [
+  { name: "สมศักดิ์ (แอดมินสโตร์)", role: "ADMIN", pin: "1111", avatar: "🔑", department: "ฝ่ายดูแลคลังกลาง" },
+  { name: "ช่างน้อย เหล็กเส้น", role: "WORKER", pin: "2222", avatar: "👷‍♂️", department: "ทีมงานโครงสร้างเหล็ก" },
+  { name: "ช่างเก่ง งานสถาปัตย์", role: "WORKER", pin: "3333", avatar: "👨‍🔧", department: "ทีมงานประกอบติดตั้ง" },
+];
+
 function toNumber(value) {
   if (value === undefined || value === null || value === "") return 0;
   const parsed = Number.parseFloat(String(value).replace(/,/g, "").trim());
@@ -23,6 +29,20 @@ function toNumber(value) {
 
 function getCell(row, index) {
   return row[index] ?? "";
+}
+
+function inferItemType(category, name, unit) {
+  const text = `${category} ${name} ${unit}`;
+  const consumableHints = ["สิ้นเปลือง", "ลวด", "เทป", "สี", "กาว", "ซิลิโคลน", "ทินเนอร์", "ใบ", "สกรู", "พุ๊ก", "ดิน", "น้ำยา"];
+  return consumableHints.some((hint) => text.includes(hint)) ? "CONSUMABLE" : "RETURNABLE";
+}
+
+function inferSafetyStock(unit, itemType) {
+  if (itemType === "CONSUMABLE") {
+    if (["กล่อง", "ม้วน", "ลิตร", "กิโลกรัม"].includes(unit)) return 3;
+    return 5;
+  }
+  return 2;
 }
 
 async function main() {
@@ -42,42 +62,34 @@ async function main() {
       const sortValue = String(getCell(row, 0)).trim();
       if (!/^\d+$/.test(sortValue)) continue;
 
-      const openingBalance = toNumber(getCell(row, 5)) || toNumber(getCell(row, 2));
       const unit = String(getCell(row, 6)).trim() || "ชิ้น";
+      const itemType = inferItemType(sheetName, name, unit);
 
       importedProducts.push({
         code: `STK${String(runningNumber).padStart(4, "0")}`,
         category: sheetName,
         name,
         unit,
-        openingBalance,
+        initialQty: toNumber(getCell(row, 2)),
+        receivedQty: toNumber(getCell(row, 3)),
+        issuedQty: toNumber(getCell(row, 4)),
+        damagedQty: 0,
+        lostQty: 0,
+        safetyStock: inferSafetyStock(unit, itemType),
+        itemType,
       });
       runningNumber += 1;
     }
   }
 
-  await prisma.transaction.deleteMany();
+  await prisma.borrowRecord.deleteMany();
+  await prisma.user.deleteMany();
   await prisma.product.deleteMany();
 
-  for (const item of importedProducts) {
-    const product = await prisma.product.create({
-      data: item,
-    });
+  await prisma.user.createMany({ data: MOCK_USERS });
+  await prisma.product.createMany({ data: importedProducts });
 
-    if (item.openingBalance > 0) {
-      await prisma.transaction.create({
-        data: {
-          productId: product.id,
-          type: TransactionType.INITIAL,
-          quantity: item.openingBalance,
-          note: "นำเข้ายอดคงเหลือเริ่มต้นจากไฟล์ Excel",
-          date: new Date("2026-04-30T00:00:00.000Z"),
-        },
-      });
-    }
-  }
-
-  console.log(`Imported ${importedProducts.length} products from ${excelPath}`);
+  console.log(`Imported ${importedProducts.length} products and ${MOCK_USERS.length} users from ${excelPath}`);
 }
 
 main()
