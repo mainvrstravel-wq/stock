@@ -1,4 +1,4 @@
-# STK Manager Pro
+# STOCK PRO
 
 ระบบจัดการสต็อกวัสดุด้วย Next.js, Prisma และ PostgreSQL/Supabase
 
