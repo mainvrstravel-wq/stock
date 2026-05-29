@@ -1,11 +1,18 @@
 import { NextResponse } from "next/server";
 
 import { prisma } from "@/lib/prisma";
-import { mapBorrow } from "@/lib/stock";
+import { mapBorrow, mapProduct } from "@/lib/stock";
 
 export async function GET() {
   const borrows = await prisma.borrowRecord.findMany({
-    include: { product: true, user: true },
+    include: {
+      product: {
+        select: { code: true, name: true, unit: true, itemType: true },
+      },
+      user: {
+        select: { id: true, name: true },
+      },
+    },
     orderBy: { borrowedAt: "desc" },
   });
   return NextResponse.json(borrows.map(mapBorrow));
@@ -30,7 +37,7 @@ export async function POST(request: Request) {
     return NextResponse.json({ message: "Insufficient stock" }, { status: 400 });
   }
 
-  await prisma.product.update({
+  const updatedProduct = await prisma.product.update({
     where: { id: product.id },
     data: { issuedQty: product.issuedQty + quantity },
   });
@@ -44,8 +51,15 @@ export async function POST(request: Request) {
       note: body.note || (product.itemType === "RETURNABLE" ? "ยืมใช้งานหน้าไซต์" : "เบิกใช้แล้วหมดไป"),
       borrowedAt: new Date(),
     },
-    include: { product: true, user: true },
+    include: {
+      product: {
+        select: { code: true, name: true, unit: true, itemType: true },
+      },
+      user: {
+        select: { id: true, name: true },
+      },
+    },
   });
 
-  return NextResponse.json(mapBorrow(borrow), { status: 201 });
+  return NextResponse.json({ borrow: mapBorrow(borrow), product: mapProduct(updatedProduct) }, { status: 201 });
 }

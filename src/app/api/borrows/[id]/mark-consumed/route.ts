@@ -16,7 +16,14 @@ export async function POST(_request: Request, context: Context) {
       status: "FULLY_CONSUMED",
       returnedAt: new Date(),
     },
-    include: { product: true, user: true },
+    include: {
+      product: {
+        select: { code: true, name: true, unit: true, itemType: true },
+      },
+      user: {
+        select: { id: true, name: true },
+      },
+    },
   });
 
   return NextResponse.json(mapBorrow(updated));

@@ -24,9 +24,19 @@ export type FrontendProduct = {
   itemType: "returnable" | "consumable";
 };
 
+type UserLike = Pick<User, "id" | "name" | "role" | "pin" | "avatar" | "department">;
+
+type ProductLike = Pick<
+  Product,
+  "id" | "code" | "category" | "name" | "unit" | "initialQty" | "receivedQty" | "issuedQty" | "damagedQty" | "lostQty" | "safetyStock" | "itemType"
+>;
+
+type BorrowProductLike = Pick<Product, "code" | "name" | "unit" | "itemType">;
+type BorrowUserLike = Pick<User, "id" | "name">;
+
 export type BorrowWithRelations = BorrowRecord & {
-  product: Product;
-  user: User;
+  product: BorrowProductLike;
+  user: BorrowUserLike;
 };
 
 export type FrontendBorrow = {
@@ -53,7 +63,7 @@ export function getBalance(product: FrontendProduct) {
   return formatNumber(product.initial + product.received - product.issued - product.damaged - product.lost);
 }
 
-export function mapUser(user: User): FrontendUser {
+export function mapUser(user: UserLike): FrontendUser {
   return {
     id: user.id,
     name: user.name,
@@ -64,7 +74,7 @@ export function mapUser(user: User): FrontendUser {
   };
 }
 
-export function mapProduct(product: Product): FrontendProduct {
+export function mapProduct(product: ProductLike): FrontendProduct {
   return {
     id: product.id,
     code: product.code,

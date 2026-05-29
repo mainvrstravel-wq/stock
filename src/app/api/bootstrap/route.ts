@@ -5,10 +5,36 @@ import { mapBorrow, mapProduct, mapUser } from "@/lib/stock";
 
 export async function GET() {
   const [users, products, borrows] = await Promise.all([
-    prisma.user.findMany({ orderBy: { role: "asc" } }),
-    prisma.product.findMany({ orderBy: { code: "asc" } }),
+    prisma.user.findMany({
+      select: { id: true, name: true, role: true, pin: true, avatar: true, department: true },
+      orderBy: { role: "asc" },
+    }),
+    prisma.product.findMany({
+      select: {
+        id: true,
+        code: true,
+        category: true,
+        name: true,
+        unit: true,
+        initialQty: true,
+        receivedQty: true,
+        issuedQty: true,
+        damagedQty: true,
+        lostQty: true,
+        safetyStock: true,
+        itemType: true,
+      },
+      orderBy: { code: "asc" },
+    }),
     prisma.borrowRecord.findMany({
-      include: { product: true, user: true },
+      include: {
+        product: {
+          select: { code: true, name: true, unit: true, itemType: true },
+        },
+        user: {
+          select: { id: true, name: true },
+        },
+      },
       orderBy: { borrowedAt: "desc" },
     }),
   ]);

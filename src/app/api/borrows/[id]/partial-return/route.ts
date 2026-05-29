@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 
 import { prisma } from "@/lib/prisma";
-import { mapBorrow } from "@/lib/stock";
+import { mapBorrow, mapProduct } from "@/lib/stock";
 
 type Context = {
   params: Promise<{ id: string }>;
@@ -25,7 +25,7 @@ export async function POST(request: Request, context: Context) {
     return NextResponse.json({ message: "Return quantity exceeds borrowed quantity" }, { status: 400 });
   }
 
-  await prisma.product.update({
+  const product = await prisma.product.update({
     where: { id: borrow.productId },
     data: { issuedQty: Math.max(0, borrow.product.issuedQty - returnQty) },
   });
@@ -39,8 +39,15 @@ export async function POST(request: Request, context: Context) {
       returnedAt: new Date(),
       note: `${borrow.note} (คืนเศษสะสมแล้ว ${updatedLeftover} ${borrow.product.unit})`,
     },
-    include: { product: true, user: true },
+    include: {
+      product: {
+        select: { code: true, name: true, unit: true, itemType: true },
+      },
+      user: {
+        select: { id: true, name: true },
+      },
+    },
   });
 
-  return NextResponse.json(mapBorrow(updated));
+  return NextResponse.json({ borrow: mapBorrow(updated), product: mapProduct(product) });
 }

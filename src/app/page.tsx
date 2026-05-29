@@ -65,6 +65,12 @@ type Borrow = {
   note: string;
 };
 
+type BorrowMutationResponse = {
+  borrow: Borrow;
+  product?: Product;
+  splitBorrow?: Borrow;
+};
+
 type ProductForm = {
   id?: string;
   code: string;
@@ -285,6 +291,16 @@ export default function Page() {
   const visibleBorrows = currentUser?.role === "admin" ? borrows : myBorrows;
   const isMutating = savingMessage !== null;
 
+  const mergeProduct = (nextProduct?: Product) => {
+    if (!nextProduct) return;
+    setProducts((prev) => prev.map((product) => (product.id === nextProduct.id ? nextProduct : product)));
+  };
+
+  const mergeBorrow = (nextBorrow?: Borrow) => {
+    if (!nextBorrow) return;
+    setBorrows((prev) => prev.map((borrow) => (borrow.id === nextBorrow.id ? nextBorrow : borrow)));
+  };
+
   const mobileNavItems = currentUser?.role === "admin"
     ? [
         { key: "dashboard" as const, label: "แดชบอร์ด", icon: <LayoutDashboard className="h-4 w-4" /> },
@@ -408,7 +424,7 @@ export default function Page() {
     try {
       setPendingProductId(selectedProductForBorrow.id);
       setSavingMessage("กำลังบันทึกรายการเบิก...");
-      const createdBorrow = await fetchJson<Borrow>("/api/borrows", {
+      const result = await fetchJson<BorrowMutationResponse>("/api/borrows", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -419,14 +435,8 @@ export default function Page() {
         }),
       });
 
-      setProducts((prev) =>
-        prev.map((product) =>
-          product.id === selectedProductForBorrow.id
-            ? { ...product, issued: formatNumber(product.issued + Number(borrowFormData.quantity)) }
-            : product,
-        ),
-      );
-      setBorrows((prev) => [createdBorrow, ...prev]);
+      mergeProduct(result.product);
+      setBorrows((prev) => [result.borrow, ...prev]);
       setIsBorrowModalOpen(false);
       showToast(`บันทึกขอเบิก "${selectedProductForBorrow.name}" เรียบร้อยแล้ว`, "success");
     } finally {
@@ -436,20 +446,12 @@ export default function Page() {
   };
 
   const handleReturnProduct = async (borrowId: string) => {
-    const currentBorrow = borrows.find((borrow) => borrow.id === borrowId);
-    if (!currentBorrow) return;
     try {
       setPendingBorrowId(borrowId);
       setSavingMessage("กำลังบันทึกรับคืน...");
-      const updatedBorrow = await fetchJson<Borrow>(`/api/borrows/${borrowId}/return`, { method: "POST" });
-      setBorrows((prev) => prev.map((borrow) => (borrow.id === borrowId ? updatedBorrow : borrow)));
-      setProducts((prev) =>
-        prev.map((product) =>
-          product.code === currentBorrow.code
-            ? { ...product, issued: formatNumber(Math.max(0, product.issued - currentBorrow.quantity)) }
-            : product,
-        ),
-      );
+      const result = await fetchJson<BorrowMutationResponse>(`/api/borrows/${borrowId}/return`, { method: "POST" });
+      mergeBorrow(result.borrow);
+      mergeProduct(result.product);
       showToast("บันทึกรับคืนสำเร็จ", "success");
     } finally {
       setPendingBorrowId(null);
@@ -467,22 +469,15 @@ export default function Page() {
     e.preventDefault();
     if (!selectedBorrowForPartialReturn) return;
     try {
-      const returnQty = Number(partialReturnQty);
       setPendingBorrowId(selectedBorrowForPartialReturn.id);
       setSavingMessage("กำลังบันทึกคืนเศษวัสดุ...");
-      const updatedBorrow = await fetchJson<Borrow>(`/api/borrows/${selectedBorrowForPartialReturn.id}/partial-return`, {
+      const result = await fetchJson<BorrowMutationResponse>(`/api/borrows/${selectedBorrowForPartialReturn.id}/partial-return`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ quantity: partialReturnQty }),
       });
-      setBorrows((prev) => prev.map((borrow) => (borrow.id === updatedBorrow.id ? updatedBorrow : borrow)));
-      setProducts((prev) =>
-        prev.map((product) =>
-          product.code === selectedBorrowForPartialReturn.code
-            ? { ...product, issued: formatNumber(Math.max(0, product.issued - returnQty)) }
-            : product,
-        ),
-      );
+      mergeBorrow(result.borrow);
+      mergeProduct(result.product);
       setIsPartialReturnModalOpen(false);
       showToast("บันทึกคืนเศษวัสดุสำเร็จ", "success");
     } finally {
@@ -496,7 +491,7 @@ export default function Page() {
       setPendingBorrowId(borrowId);
       setSavingMessage("กำลังปิดใบเบิก...");
       const updatedBorrow = await fetchJson<Borrow>(`/api/borrows/${borrowId}/mark-consumed`, { method: "POST" });
-      setBorrows((prev) => prev.map((borrow) => (borrow.id === borrowId ? updatedBorrow : borrow)));
+      mergeBorrow(updatedBorrow);
       showToast("อัปเดตใบเบิกเป็นใช้หมดเรียบร้อย", "success");
     } finally {
       setPendingBorrowId(null);
@@ -520,13 +515,17 @@ export default function Page() {
     try {
       setPendingBorrowId(selectedBorrowForIssue.id);
       setSavingMessage(`กำลังบันทึกรายงาน${issueFormData.type === "lost" ? "สูญหาย" : "ชำรุด"}...`);
-      await fetchJson(`/api/borrows/${selectedBorrowForIssue.id}/issue`, {
+      const result = await fetchJson<BorrowMutationResponse>(`/api/borrows/${selectedBorrowForIssue.id}/issue`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(issueFormData),
       });
+      mergeBorrow(result.borrow);
+      mergeProduct(result.product);
+      if (result.splitBorrow) {
+        setBorrows((prev) => [result.splitBorrow!, ...prev]);
+      }
       setIsIssueModalOpen(false);
-      await loadBootstrap();
       showToast(`ลงประวัติ "${selectedBorrowForIssue.name}" สำเร็จ`, "warning");
     } finally {
       setPendingBorrowId(null);
