@@ -361,6 +361,8 @@ export default function Page() {
       setIsAddModalOpen(false);
       setProducts((prev) => [...prev, createdProduct].sort((a, b) => a.code.localeCompare(b.code)));
       showToast(`ลงทะเบียนสินค้า "${currentProduct.name}" เรียบร้อย!`, "success");
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : "บันทึกสินค้าไม่สำเร็จ", "error");
     } finally {
       setSavingMessage(null);
     }
@@ -386,6 +388,8 @@ export default function Page() {
       setIsEditModalOpen(false);
       setProducts((prev) => prev.map((product) => (product.id === updatedProduct.id ? updatedProduct : product)));
       showToast("ปรับปรุงข้อมูลเรียบร้อย!", "success");
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : "ปรับปรุงสินค้าไม่สำเร็จ", "error");
     } finally {
       setSavingMessage(null);
     }
@@ -405,6 +409,8 @@ export default function Page() {
       const deletedName = deleteConfirm.productName;
       setDeleteConfirm({ isOpen: false, productId: null, productName: "" });
       showToast(`ลบรายการ "${deletedName}" แล้ว`, "warning");
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : "ลบสินค้าไม่สำเร็จ", "error");
     } finally {
       setPendingProductId(null);
       setSavingMessage(null);
@@ -420,6 +426,18 @@ export default function Page() {
   const handleBorrowSubmit = async (e: FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     if (!selectedProductForBorrow || !currentUser) return;
+
+    const requestQty = Number(borrowFormData.quantity);
+    if (!Number.isFinite(requestQty) || requestQty <= 0) {
+      showToast("กรุณาระบุจำนวนที่เบิกให้ถูกต้อง", "error");
+      return;
+    }
+
+    const currentBalance = getBalance(selectedProductForBorrow);
+    if (requestQty > currentBalance) {
+      showToast(`สต็อกไม่พอ: คงเหลือ ${currentBalance} ${selectedProductForBorrow.unit} แต่ขอเบิก ${requestQty}`, "error");
+      return;
+    }
 
     try {
       setPendingProductId(selectedProductForBorrow.id);
@@ -439,6 +457,8 @@ export default function Page() {
       setBorrows((prev) => [result.borrow, ...prev]);
       setIsBorrowModalOpen(false);
       showToast(`บันทึกขอเบิก "${selectedProductForBorrow.name}" เรียบร้อยแล้ว`, "success");
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : "บันทึกรายการเบิกไม่สำเร็จ", "error");
     } finally {
       setPendingProductId(null);
       setSavingMessage(null);
@@ -453,6 +473,8 @@ export default function Page() {
       mergeBorrow(result.borrow);
       mergeProduct(result.product);
       showToast("บันทึกรับคืนสำเร็จ", "success");
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : "บันทึกรับคืนไม่สำเร็จ", "error");
     } finally {
       setPendingBorrowId(null);
       setSavingMessage(null);
@@ -468,6 +490,18 @@ export default function Page() {
   const handlePartialReturnSubmit = async (e: FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     if (!selectedBorrowForPartialReturn) return;
+
+    const returnQty = Number(partialReturnQty);
+    const maxReturnable = selectedBorrowForPartialReturn.quantity - selectedBorrowForPartialReturn.leftoverReturned;
+    if (!Number.isFinite(returnQty) || returnQty <= 0) {
+      showToast("กรุณาระบุจำนวนคืนเศษให้ถูกต้อง", "error");
+      return;
+    }
+    if (returnQty > maxReturnable) {
+      showToast(`คืนได้สูงสุด ${maxReturnable} ${selectedBorrowForPartialReturn.unit}`, "error");
+      return;
+    }
+
     try {
       setPendingBorrowId(selectedBorrowForPartialReturn.id);
       setSavingMessage("กำลังบันทึกคืนเศษวัสดุ...");
@@ -480,6 +514,8 @@ export default function Page() {
       mergeProduct(result.product);
       setIsPartialReturnModalOpen(false);
       showToast("บันทึกคืนเศษวัสดุสำเร็จ", "success");
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : "บันทึกคืนเศษวัสดุไม่สำเร็จ", "error");
     } finally {
       setPendingBorrowId(null);
       setSavingMessage(null);
@@ -493,6 +529,8 @@ export default function Page() {
       const updatedBorrow = await fetchJson<Borrow>(`/api/borrows/${borrowId}/mark-consumed`, { method: "POST" });
       mergeBorrow(updatedBorrow);
       showToast("อัปเดตใบเบิกเป็นใช้หมดเรียบร้อย", "success");
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : "อัปเดตใบเบิกไม่สำเร็จ", "error");
     } finally {
       setPendingBorrowId(null);
       setSavingMessage(null);
@@ -512,6 +550,18 @@ export default function Page() {
   const handleIssueReportSubmit = async (e: FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     if (!selectedBorrowForIssue) return;
+
+    const reportQty = Number(issueFormData.quantity);
+    const maxReportable = selectedBorrowForIssue.quantity - selectedBorrowForIssue.leftoverReturned;
+    if (!Number.isFinite(reportQty) || reportQty <= 0) {
+      showToast("กรุณาระบุจำนวนที่ต้องการแจ้งให้ถูกต้อง", "error");
+      return;
+    }
+    if (reportQty > maxReportable) {
+      showToast(`แจ้งได้สูงสุด ${maxReportable} ${selectedBorrowForIssue.unit}`, "error");
+      return;
+    }
+
     try {
       setPendingBorrowId(selectedBorrowForIssue.id);
       setSavingMessage(`กำลังบันทึกรายงาน${issueFormData.type === "lost" ? "สูญหาย" : "ชำรุด"}...`);
@@ -527,6 +577,8 @@ export default function Page() {
       }
       setIsIssueModalOpen(false);
       showToast(`ลงประวัติ "${selectedBorrowForIssue.name}" สำเร็จ`, "warning");
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : "บันทึกรายงานไม่สำเร็จ", "error");
     } finally {
       setPendingBorrowId(null);
       setSavingMessage(null);
