@@ -151,6 +151,9 @@ export default function Page() {
   const [issueFormData, setIssueFormData] = useState({ type: "damaged" as "damaged" | "lost", quantity: 1, note: "" });
   const [selectedBorrowForPartialReturn, setSelectedBorrowForPartialReturn] = useState<Borrow | null>(null);
   const [partialReturnQty, setPartialReturnQty] = useState("");
+  const [savingMessage, setSavingMessage] = useState<string | null>(null);
+  const [pendingBorrowId, setPendingBorrowId] = useState<string | null>(null);
+  const [pendingProductId, setPendingProductId] = useState<string | null>(null);
 
   const showToast = (message: string, type: Toast["type"] = "success") => setToast({ message, type });
 
@@ -280,6 +283,7 @@ export default function Page() {
   }, [borrows, currentUser]);
 
   const visibleBorrows = currentUser?.role === "admin" ? borrows : myBorrows;
+  const isMutating = savingMessage !== null;
 
   const mobileNavItems = currentUser?.role === "admin"
     ? [
@@ -330,15 +334,20 @@ export default function Page() {
       return;
     }
 
-    const createdProduct = await fetchJson<Product>("/api/products", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(currentProduct),
-    });
+    try {
+      setSavingMessage("กำลังบันทึกสินค้า...");
+      const createdProduct = await fetchJson<Product>("/api/products", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(currentProduct),
+      });
 
-    setIsAddModalOpen(false);
-    setProducts((prev) => [...prev, createdProduct].sort((a, b) => a.code.localeCompare(b.code)));
-    showToast(`ลงทะเบียนสินค้า "${currentProduct.name}" เรียบร้อย!`, "success");
+      setIsAddModalOpen(false);
+      setProducts((prev) => [...prev, createdProduct].sort((a, b) => a.code.localeCompare(b.code)));
+      showToast(`ลงทะเบียนสินค้า "${currentProduct.name}" เรียบร้อย!`, "success");
+    } finally {
+      setSavingMessage(null);
+    }
   };
 
   const openEditModal = (product: Product) => {
@@ -350,15 +359,20 @@ export default function Page() {
     e.preventDefault();
     if (!currentProduct.id) return;
 
-    const updatedProduct = await fetchJson<Product>(`/api/products/${currentProduct.id}`, {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(currentProduct),
-    });
+    try {
+      setSavingMessage("กำลังปรับปรุงสินค้า...");
+      const updatedProduct = await fetchJson<Product>(`/api/products/${currentProduct.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(currentProduct),
+      });
 
-    setIsEditModalOpen(false);
-    setProducts((prev) => prev.map((product) => (product.id === updatedProduct.id ? updatedProduct : product)));
-    showToast("ปรับปรุงข้อมูลเรียบร้อย!", "success");
+      setIsEditModalOpen(false);
+      setProducts((prev) => prev.map((product) => (product.id === updatedProduct.id ? updatedProduct : product)));
+      showToast("ปรับปรุงข้อมูลเรียบร้อย!", "success");
+    } finally {
+      setSavingMessage(null);
+    }
   };
 
   const triggerDeleteProduct = (id: string, name: string) => {
@@ -367,11 +381,18 @@ export default function Page() {
 
   const executeDeleteProduct = async () => {
     if (!deleteConfirm.productId) return;
-    await fetchJson(`/api/products/${deleteConfirm.productId}`, { method: "DELETE" });
-    setProducts((prev) => prev.filter((product) => product.id !== deleteConfirm.productId));
-    const deletedName = deleteConfirm.productName;
-    setDeleteConfirm({ isOpen: false, productId: null, productName: "" });
-    showToast(`ลบรายการ "${deletedName}" แล้ว`, "warning");
+    try {
+      setPendingProductId(deleteConfirm.productId);
+      setSavingMessage("กำลังลบสินค้า...");
+      await fetchJson(`/api/products/${deleteConfirm.productId}`, { method: "DELETE" });
+      setProducts((prev) => prev.filter((product) => product.id !== deleteConfirm.productId));
+      const deletedName = deleteConfirm.productName;
+      setDeleteConfirm({ isOpen: false, productId: null, productName: "" });
+      showToast(`ลบรายการ "${deletedName}" แล้ว`, "warning");
+    } finally {
+      setPendingProductId(null);
+      setSavingMessage(null);
+    }
   };
 
   const openBorrowModal = (product: Product) => {
@@ -384,26 +405,56 @@ export default function Page() {
     e.preventDefault();
     if (!selectedProductForBorrow || !currentUser) return;
 
-    await fetchJson("/api/borrows", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        productId: selectedProductForBorrow.id,
-        userId: currentUser.id,
-        quantity: borrowFormData.quantity,
-        note: borrowFormData.note,
-      }),
-    });
+    try {
+      setPendingProductId(selectedProductForBorrow.id);
+      setSavingMessage("กำลังบันทึกรายการเบิก...");
+      const createdBorrow = await fetchJson<Borrow>("/api/borrows", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          productId: selectedProductForBorrow.id,
+          userId: currentUser.id,
+          quantity: borrowFormData.quantity,
+          note: borrowFormData.note,
+        }),
+      });
 
-    setIsBorrowModalOpen(false);
-    await loadBootstrap();
-    showToast(`บันทึกขอเบิก "${selectedProductForBorrow.name}" เรียบร้อยแล้ว`, "success");
+      setProducts((prev) =>
+        prev.map((product) =>
+          product.id === selectedProductForBorrow.id
+            ? { ...product, issued: formatNumber(product.issued + Number(borrowFormData.quantity)) }
+            : product,
+        ),
+      );
+      setBorrows((prev) => [createdBorrow, ...prev]);
+      setIsBorrowModalOpen(false);
+      showToast(`บันทึกขอเบิก "${selectedProductForBorrow.name}" เรียบร้อยแล้ว`, "success");
+    } finally {
+      setPendingProductId(null);
+      setSavingMessage(null);
+    }
   };
 
   const handleReturnProduct = async (borrowId: string) => {
-    await fetchJson(`/api/borrows/${borrowId}/return`, { method: "POST" });
-    await loadBootstrap();
-    showToast("บันทึกรับคืนสำเร็จ", "success");
+    const currentBorrow = borrows.find((borrow) => borrow.id === borrowId);
+    if (!currentBorrow) return;
+    try {
+      setPendingBorrowId(borrowId);
+      setSavingMessage("กำลังบันทึกรับคืน...");
+      const updatedBorrow = await fetchJson<Borrow>(`/api/borrows/${borrowId}/return`, { method: "POST" });
+      setBorrows((prev) => prev.map((borrow) => (borrow.id === borrowId ? updatedBorrow : borrow)));
+      setProducts((prev) =>
+        prev.map((product) =>
+          product.code === currentBorrow.code
+            ? { ...product, issued: formatNumber(Math.max(0, product.issued - currentBorrow.quantity)) }
+            : product,
+        ),
+      );
+      showToast("บันทึกรับคืนสำเร็จ", "success");
+    } finally {
+      setPendingBorrowId(null);
+      setSavingMessage(null);
+    }
   };
 
   const handlePartialReturnOpen = (borrowRecord: Borrow) => {
@@ -415,20 +466,42 @@ export default function Page() {
   const handlePartialReturnSubmit = async (e: FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     if (!selectedBorrowForPartialReturn) return;
-    await fetchJson(`/api/borrows/${selectedBorrowForPartialReturn.id}/partial-return`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ quantity: partialReturnQty }),
-    });
-    setIsPartialReturnModalOpen(false);
-    await loadBootstrap();
-    showToast("บันทึกคืนเศษวัสดุสำเร็จ", "success");
+    try {
+      const returnQty = Number(partialReturnQty);
+      setPendingBorrowId(selectedBorrowForPartialReturn.id);
+      setSavingMessage("กำลังบันทึกคืนเศษวัสดุ...");
+      const updatedBorrow = await fetchJson<Borrow>(`/api/borrows/${selectedBorrowForPartialReturn.id}/partial-return`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ quantity: partialReturnQty }),
+      });
+      setBorrows((prev) => prev.map((borrow) => (borrow.id === updatedBorrow.id ? updatedBorrow : borrow)));
+      setProducts((prev) =>
+        prev.map((product) =>
+          product.code === selectedBorrowForPartialReturn.code
+            ? { ...product, issued: formatNumber(Math.max(0, product.issued - returnQty)) }
+            : product,
+        ),
+      );
+      setIsPartialReturnModalOpen(false);
+      showToast("บันทึกคืนเศษวัสดุสำเร็จ", "success");
+    } finally {
+      setPendingBorrowId(null);
+      setSavingMessage(null);
+    }
   };
 
   const handleMarkFullyConsumed = async (borrowId: string) => {
-    await fetchJson(`/api/borrows/${borrowId}/mark-consumed`, { method: "POST" });
-    await loadBootstrap();
-    showToast("อัปเดตใบเบิกเป็นใช้หมดเรียบร้อย", "success");
+    try {
+      setPendingBorrowId(borrowId);
+      setSavingMessage("กำลังปิดใบเบิก...");
+      const updatedBorrow = await fetchJson<Borrow>(`/api/borrows/${borrowId}/mark-consumed`, { method: "POST" });
+      setBorrows((prev) => prev.map((borrow) => (borrow.id === borrowId ? updatedBorrow : borrow)));
+      showToast("อัปเดตใบเบิกเป็นใช้หมดเรียบร้อย", "success");
+    } finally {
+      setPendingBorrowId(null);
+      setSavingMessage(null);
+    }
   };
 
   const handleIssueReportOpen = (borrowRecord: Borrow) => {
@@ -444,14 +517,21 @@ export default function Page() {
   const handleIssueReportSubmit = async (e: FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     if (!selectedBorrowForIssue) return;
-    await fetchJson(`/api/borrows/${selectedBorrowForIssue.id}/issue`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(issueFormData),
-    });
-    setIsIssueModalOpen(false);
-    await loadBootstrap();
-    showToast(`ลงประวัติ "${selectedBorrowForIssue.name}" สำเร็จ`, "warning");
+    try {
+      setPendingBorrowId(selectedBorrowForIssue.id);
+      setSavingMessage(`กำลังบันทึกรายงาน${issueFormData.type === "lost" ? "สูญหาย" : "ชำรุด"}...`);
+      await fetchJson(`/api/borrows/${selectedBorrowForIssue.id}/issue`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(issueFormData),
+      });
+      setIsIssueModalOpen(false);
+      await loadBootstrap();
+      showToast(`ลงประวัติ "${selectedBorrowForIssue.name}" สำเร็จ`, "warning");
+    } finally {
+      setPendingBorrowId(null);
+      setSavingMessage(null);
+    }
   };
 
   const handleMockExport = (format: string) => {
@@ -467,6 +547,15 @@ export default function Page() {
             {toast.type === "error" && <AlertTriangle className="h-5 w-5 shrink-0" />}
             {toast.type === "warning" && <AlertCircle className="h-5 w-5 shrink-0" />}
             <span className="text-sm font-bold">{toast.message}</span>
+          </div>
+        </div>
+      )}
+
+      {isMutating && (
+        <div className="fixed top-20 right-4 z-50">
+          <div className="flex items-center gap-2 rounded-xl border border-blue-500/20 bg-slate-900/95 px-3 py-2 shadow-2xl backdrop-blur">
+            <RotateCcw className="h-4 w-4 animate-spin text-blue-400" />
+            <span className="text-xs font-bold text-slate-100">{savingMessage}</span>
           </div>
         </div>
       )}
@@ -711,8 +800,8 @@ export default function Page() {
                         <div className="pt-2 border-t border-slate-800/80 flex items-center justify-between gap-2">
                           <span className="text-[10px] text-slate-500">เกณฑ์เซฟตี้: <strong>{p.safetyStock}</strong> {p.unit}</span>
                           <div className="flex space-x-1">
-                            <button onClick={() => openBorrowModal(p)} disabled={balance <= 0} className={`px-3 py-1.5 rounded-lg text-[11px] font-black transition-all ${balance <= 0 ? "bg-slate-800 text-slate-500 cursor-not-allowed" : "bg-blue-600 hover:bg-blue-500 text-white"}`}>ขอเบิกอุปกรณ์</button>
-                            {currentUser.role === "admin" && <><button onClick={() => openEditModal(p)} className="p-1.5 bg-slate-950 text-slate-400 border border-slate-800 rounded-lg"><Edit className="h-3.5 w-3.5" /></button><button onClick={() => triggerDeleteProduct(p.id, p.name)} className="p-1.5 bg-slate-950 text-rose-500 border border-slate-800 rounded-lg"><Trash2 className="h-3.5 w-3.5" /></button></>}
+                              <button onClick={() => openBorrowModal(p)} disabled={balance <= 0 || pendingProductId === p.id} className={`px-3 py-1.5 rounded-lg text-[11px] font-black transition-all ${balance <= 0 || pendingProductId === p.id ? "bg-slate-800 text-slate-500 cursor-not-allowed" : "bg-blue-600 hover:bg-blue-500 text-white"}`}>{pendingProductId === p.id ? "กำลังบันทึก..." : "ขอเบิกอุปกรณ์"}</button>
+                              {currentUser.role === "admin" && <><button onClick={() => openEditModal(p)} disabled={pendingProductId === p.id} className="p-1.5 bg-slate-950 text-slate-400 border border-slate-800 rounded-lg disabled:opacity-40"><Edit className="h-3.5 w-3.5" /></button><button onClick={() => triggerDeleteProduct(p.id, p.name)} disabled={pendingProductId === p.id} className="p-1.5 bg-slate-950 text-rose-500 border border-slate-800 rounded-lg disabled:opacity-40"><Trash2 className="h-3.5 w-3.5" /></button></>}
                           </div>
                         </div>
                       </div>
@@ -755,8 +844,8 @@ export default function Page() {
                             <td className="px-3 py-3 text-center"><span className={`px-2 py-0.5 rounded font-extrabold ${balance === 0 ? "bg-rose-500/10 text-rose-400 border border-rose-500/20" : balance <= p.safetyStock ? "bg-amber-500/10 text-amber-400 border border-amber-500/20" : "bg-emerald-500/10 text-emerald-400 border border-emerald-500/20"}`}>{balance}</span></td>
                             <td className="px-3 py-3 text-slate-400">{p.safetyStock} {p.unit}</td>
                             <td className="px-4 py-3 text-right space-x-1 whitespace-nowrap">
-                              <button onClick={() => openBorrowModal(p)} disabled={balance <= 0} className={`px-2.5 py-1 rounded text-[11px] font-bold ${balance <= 0 ? "bg-slate-800 text-slate-600 cursor-not-allowed" : "bg-blue-600 hover:bg-blue-500 text-white"}`}>ขอเบิก</button>
-                              {currentUser.role === "admin" && <><button onClick={() => openEditModal(p)} className="p-1 text-slate-400 hover:text-white"><Edit className="h-4.5 w-4.5" /></button><button onClick={() => triggerDeleteProduct(p.id, p.name)} className="p-1 text-rose-400 hover:text-rose-300"><Trash2 className="h-4.5 w-4.5" /></button></>}
+                              <button onClick={() => openBorrowModal(p)} disabled={balance <= 0 || pendingProductId === p.id} className={`px-2.5 py-1 rounded text-[11px] font-bold ${balance <= 0 || pendingProductId === p.id ? "bg-slate-800 text-slate-600 cursor-not-allowed" : "bg-blue-600 hover:bg-blue-500 text-white"}`}>{pendingProductId === p.id ? "กำลังบันทึก..." : "ขอเบิก"}</button>
+                              {currentUser.role === "admin" && <><button onClick={() => openEditModal(p)} disabled={pendingProductId === p.id} className="p-1 text-slate-400 hover:text-white disabled:opacity-40"><Edit className="h-4.5 w-4.5" /></button><button onClick={() => triggerDeleteProduct(p.id, p.name)} disabled={pendingProductId === p.id} className="p-1 text-rose-400 hover:text-rose-300 disabled:opacity-40"><Trash2 className="h-4.5 w-4.5" /></button></>}
                             </td>
                           </tr>
                         );
@@ -786,10 +875,10 @@ export default function Page() {
                         </div>
 
                         <div className="flex flex-wrap gap-2 justify-end">
-                          {currentUser.role === "admin" && borrow.status === "borrowing" && borrow.itemType === "returnable" && <ActionButton onClick={() => void handleReturnProduct(borrow.id)} label="รับคืน" icon={<RotateCcw className="h-3.5 w-3.5" />} variant="success" />}
-                          {currentUser.role === "admin" && borrow.itemType === "consumable" && (borrow.status === "consumed" || borrow.status === "fully_consumed") && <ActionButton onClick={() => handlePartialReturnOpen(borrow)} label="คืนเศษ" icon={<RotateCcw className="h-3.5 w-3.5" />} variant="secondary" />}
-                          {currentUser.role === "admin" && borrow.itemType === "consumable" && borrow.status === "consumed" && <ActionButton onClick={() => void handleMarkFullyConsumed(borrow.id)} label="ใช้หมดแล้ว" icon={<Flame className="h-3.5 w-3.5" />} variant="warning" />}
-                          {currentUser.role === "admin" && (borrow.status === "borrowing" || borrow.status === "consumed") && <ActionButton onClick={() => handleIssueReportOpen(borrow)} label="แจ้งชำรุด/สูญหาย" icon={<AlertTriangle className="h-3.5 w-3.5" />} variant="danger" />}
+                          {currentUser.role === "admin" && borrow.status === "borrowing" && borrow.itemType === "returnable" && <ActionButton onClick={() => void handleReturnProduct(borrow.id)} label={pendingBorrowId === borrow.id ? "กำลังบันทึก..." : "รับคืน"} icon={<RotateCcw className={`h-3.5 w-3.5 ${pendingBorrowId === borrow.id ? "animate-spin" : ""}`} />} variant="success" disabled={pendingBorrowId === borrow.id} />}
+                          {currentUser.role === "admin" && borrow.itemType === "consumable" && (borrow.status === "consumed" || borrow.status === "fully_consumed") && <ActionButton onClick={() => handlePartialReturnOpen(borrow)} label="คืนเศษ" icon={<RotateCcw className="h-3.5 w-3.5" />} variant="secondary" disabled={pendingBorrowId === borrow.id} />}
+                          {currentUser.role === "admin" && borrow.itemType === "consumable" && borrow.status === "consumed" && <ActionButton onClick={() => void handleMarkFullyConsumed(borrow.id)} label={pendingBorrowId === borrow.id ? "กำลังบันทึก..." : "ใช้หมดแล้ว"} icon={<Flame className="h-3.5 w-3.5" />} variant="warning" disabled={pendingBorrowId === borrow.id} />}
+                          {currentUser.role === "admin" && (borrow.status === "borrowing" || borrow.status === "consumed") && <ActionButton onClick={() => handleIssueReportOpen(borrow)} label="แจ้งชำรุด/สูญหาย" icon={<AlertTriangle className="h-3.5 w-3.5" />} variant="danger" disabled={pendingBorrowId === borrow.id} />}
                         </div>
                       </div>
                     ))}
@@ -802,8 +891,8 @@ export default function Page() {
         </div>
       )}
 
-      {isAddModalOpen && <ProductModal title="เพิ่มสินค้าใหม่" product={currentProduct} setProduct={setCurrentProduct} onClose={() => setIsAddModalOpen(false)} onSubmit={handleAddProduct} />}
-      {isEditModalOpen && <ProductModal title="แก้ไขข้อมูลสินค้า" product={currentProduct} setProduct={setCurrentProduct} onClose={() => setIsEditModalOpen(false)} onSubmit={handleEditProduct} />}
+      {isAddModalOpen && <ProductModal title="เพิ่มสินค้าใหม่" product={currentProduct} setProduct={setCurrentProduct} onClose={() => setIsAddModalOpen(false)} onSubmit={handleAddProduct} isSubmitting={isMutating} />}
+      {isEditModalOpen && <ProductModal title="แก้ไขข้อมูลสินค้า" product={currentProduct} setProduct={setCurrentProduct} onClose={() => setIsEditModalOpen(false)} onSubmit={handleEditProduct} isSubmitting={isMutating} />}
 
       {isBorrowModalOpen && selectedProductForBorrow && (
         <FormShell title={`ขอเบิก: ${selectedProductForBorrow.name}`} onClose={() => setIsBorrowModalOpen(false)}>
@@ -817,7 +906,7 @@ export default function Page() {
               <label className="block text-xs text-slate-400 mb-1">หมายเหตุ</label>
               <textarea value={borrowFormData.note} onChange={(e) => setBorrowFormData((prev) => ({ ...prev, note: e.target.value }))} className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-sm min-h-24" />
             </div>
-            <button type="submit" className="w-full bg-blue-600 hover:bg-blue-500 text-white py-2 rounded-lg text-sm font-bold">ยืนยันการเบิก</button>
+            <button type="submit" disabled={isMutating} className="w-full bg-blue-600 hover:bg-blue-500 text-white py-2 rounded-lg text-sm font-bold disabled:opacity-60">{isMutating ? "กำลังบันทึก..." : "ยืนยันการเบิก"}</button>
           </form>
         </FormShell>
       )}
@@ -837,7 +926,7 @@ export default function Page() {
               <label className="block text-xs text-slate-400 mb-1">เหตุผล</label>
               <textarea value={issueFormData.note} onChange={(e) => setIssueFormData((prev) => ({ ...prev, note: e.target.value }))} className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-sm min-h-24" />
             </div>
-            <button type="submit" className="w-full bg-amber-500 hover:bg-amber-400 text-slate-950 py-2 rounded-lg text-sm font-bold">บันทึกรายงาน</button>
+            <button type="submit" disabled={isMutating} className="w-full bg-amber-500 hover:bg-amber-400 text-slate-950 py-2 rounded-lg text-sm font-bold disabled:opacity-60">{isMutating ? "กำลังบันทึก..." : "บันทึกรายงาน"}</button>
           </form>
         </FormShell>
       )}
@@ -849,7 +938,7 @@ export default function Page() {
               <label className="block text-xs text-slate-400 mb-1">จำนวนที่คืน</label>
               <input type="number" min="0.01" step="0.01" value={partialReturnQty} onChange={(e) => setPartialReturnQty(e.target.value)} className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-sm" />
             </div>
-            <button type="submit" className="w-full bg-emerald-600 hover:bg-emerald-500 text-white py-2 rounded-lg text-sm font-bold">บันทึกคืนเศษ</button>
+            <button type="submit" disabled={isMutating} className="w-full bg-emerald-600 hover:bg-emerald-500 text-white py-2 rounded-lg text-sm font-bold disabled:opacity-60">{isMutating ? "กำลังบันทึก..." : "บันทึกคืนเศษ"}</button>
           </form>
         </FormShell>
       )}
@@ -860,7 +949,7 @@ export default function Page() {
             <p>ต้องการลบรายการ <strong>{deleteConfirm.productName}</strong> ใช่หรือไม่</p>
             <div className="flex gap-2">
               <button onClick={() => setDeleteConfirm({ isOpen: false, productId: null, productName: "" })} className="flex-1 bg-slate-900 border border-slate-800 py-2 rounded-lg">ยกเลิก</button>
-              <button onClick={() => void executeDeleteProduct()} className="flex-1 bg-rose-600 hover:bg-rose-500 py-2 rounded-lg text-white font-bold">ลบสินค้า</button>
+              <button onClick={() => void executeDeleteProduct()} disabled={isMutating} className="flex-1 bg-rose-600 hover:bg-rose-500 py-2 rounded-lg text-white font-bold disabled:opacity-60">{isMutating ? "กำลังลบ..." : "ลบสินค้า"}</button>
             </div>
           </div>
         </FormShell>
@@ -937,7 +1026,7 @@ function BorrowStatusBadge({ status }: { status: Borrow["status"] }) {
   return <span className={`px-1.5 py-0.5 rounded text-[9px] font-bold ${config[status]}`}>{label[status]}</span>;
 }
 
-function ActionButton({ onClick, label, icon, variant }: { onClick: () => void; label: string; icon: ReactNode; variant: "success" | "secondary" | "warning" | "danger" }) {
+function ActionButton({ onClick, label, icon, variant, disabled = false }: { onClick: () => void; label: string; icon: ReactNode; variant: "success" | "secondary" | "warning" | "danger"; disabled?: boolean }) {
   const styles = {
     success: "bg-emerald-600 hover:bg-emerald-500 text-white",
     secondary: "bg-slate-900 border border-slate-800 text-slate-200 hover:bg-slate-800",
@@ -946,7 +1035,7 @@ function ActionButton({ onClick, label, icon, variant }: { onClick: () => void; 
   };
 
   return (
-    <button onClick={onClick} className={`px-3 py-1.5 rounded-lg text-[11px] font-bold flex items-center gap-1 ${styles[variant]}`}>
+    <button onClick={onClick} disabled={disabled} className={`px-3 py-1.5 rounded-lg text-[11px] font-bold flex items-center gap-1 ${styles[variant]} disabled:opacity-60 disabled:cursor-not-allowed`}>
       {icon}
       <span>{label}</span>
     </button>
@@ -967,7 +1056,7 @@ function FormShell({ title, onClose, children }: { title: string; onClose: () =>
   );
 }
 
-function ProductModal({ title, product, setProduct, onClose, onSubmit }: { title: string; product: ProductForm; setProduct: (updater: (prev: ProductForm) => ProductForm) => void; onClose: () => void; onSubmit: (e: FormEvent<HTMLFormElement>) => void }) {
+function ProductModal({ title, product, setProduct, onClose, onSubmit, isSubmitting }: { title: string; product: ProductForm; setProduct: (updater: (prev: ProductForm) => ProductForm) => void; onClose: () => void; onSubmit: (e: FormEvent<HTMLFormElement>) => void; isSubmitting: boolean }) {
   return (
     <FormShell title={title} onClose={onClose}>
       <form onSubmit={onSubmit} className="space-y-3">
@@ -994,7 +1083,7 @@ function ProductModal({ title, product, setProduct, onClose, onSubmit }: { title
             </select>
           </Field>
         </div>
-        <button type="submit" className="w-full bg-blue-600 hover:bg-blue-500 text-white py-2 rounded-lg text-sm font-bold">บันทึก</button>
+        <button type="submit" disabled={isSubmitting} className="w-full bg-blue-600 hover:bg-blue-500 text-white py-2 rounded-lg text-sm font-bold disabled:opacity-60">{isSubmitting ? "กำลังบันทึก..." : "บันทึก"}</button>
       </form>
     </FormShell>
   );
