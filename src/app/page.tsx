@@ -281,6 +281,17 @@ export default function Page() {
 
   const visibleBorrows = currentUser?.role === "admin" ? borrows : myBorrows;
 
+  const mobileNavItems = currentUser?.role === "admin"
+    ? [
+        { key: "dashboard" as const, label: "แดชบอร์ด", icon: <LayoutDashboard className="h-4 w-4" /> },
+        { key: "inventory" as const, label: "คลัง", icon: <Package className="h-4 w-4" /> },
+        { key: "transactions" as const, label: "ประวัติ", icon: <History className="h-4 w-4" /> },
+      ]
+    : [
+        { key: "inventory" as const, label: "คลัง", icon: <Package className="h-4 w-4" /> },
+        { key: "transactions" as const, label: "ของฉัน", icon: <History className="h-4 w-4" /> },
+      ];
+
   const handleLogin = (e: FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     const foundUser = users.find((user) => user.pin === pinInput);
@@ -319,14 +330,14 @@ export default function Page() {
       return;
     }
 
-    await fetchJson("/api/products", {
+    const createdProduct = await fetchJson<Product>("/api/products", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(currentProduct),
     });
 
     setIsAddModalOpen(false);
-    await loadBootstrap();
+    setProducts((prev) => [...prev, createdProduct].sort((a, b) => a.code.localeCompare(b.code)));
     showToast(`ลงทะเบียนสินค้า "${currentProduct.name}" เรียบร้อย!`, "success");
   };
 
@@ -339,14 +350,14 @@ export default function Page() {
     e.preventDefault();
     if (!currentProduct.id) return;
 
-    await fetchJson(`/api/products/${currentProduct.id}`, {
+    const updatedProduct = await fetchJson<Product>(`/api/products/${currentProduct.id}`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(currentProduct),
     });
 
     setIsEditModalOpen(false);
-    await loadBootstrap();
+    setProducts((prev) => prev.map((product) => (product.id === updatedProduct.id ? updatedProduct : product)));
     showToast("ปรับปรุงข้อมูลเรียบร้อย!", "success");
   };
 
@@ -357,9 +368,9 @@ export default function Page() {
   const executeDeleteProduct = async () => {
     if (!deleteConfirm.productId) return;
     await fetchJson(`/api/products/${deleteConfirm.productId}`, { method: "DELETE" });
+    setProducts((prev) => prev.filter((product) => product.id !== deleteConfirm.productId));
     const deletedName = deleteConfirm.productName;
     setDeleteConfirm({ isOpen: false, productId: null, productName: "" });
-    await loadBootstrap();
     showToast(`ลบรายการ "${deletedName}" แล้ว`, "warning");
   };
 
@@ -853,6 +864,23 @@ export default function Page() {
             </div>
           </div>
         </FormShell>
+      )}
+
+      {currentUser && (
+        <nav className="fixed bottom-0 inset-x-0 md:hidden border-t border-slate-800 bg-slate-950/95 backdrop-blur px-2 py-2 z-40">
+          <div className={`grid gap-2 ${mobileNavItems.length === 3 ? "grid-cols-3" : "grid-cols-2"}`}>
+            {mobileNavItems.map((item) => (
+              <button
+                key={item.key}
+                onClick={() => setActiveTab(item.key)}
+                className={`flex flex-col items-center justify-center gap-1 rounded-xl px-2 py-2 text-[11px] font-bold transition-colors ${activeTab === item.key ? "bg-blue-600 text-white" : "text-slate-400 hover:bg-slate-900"}`}
+              >
+                {item.icon}
+                <span>{item.label}</span>
+              </button>
+            ))}
+          </div>
+        </nav>
       )}
     </div>
   );
